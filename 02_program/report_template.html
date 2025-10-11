@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>野球スイング</title>
+<style>
+  :root{ --fg:#222; --sub:#6b7280; --line:#d1d5db; --accent:#0ea5e9; }
+
+  /* ベース */
+  html,body{margin:0;padding:0;font-family:system-ui,-apple-system,"Segoe UI","Noto Sans JP",sans-serif;color:var(--fg)}
+
+  /* 用紙：A4横 + 実効領域を固定（277×190mm） */
+  @page{ size: A4 landscape; margin:10mm; }
+  .sheet{
+    width:277mm; height:190mm;
+    margin:0 auto; box-sizing:border-box; overflow:hidden;
+  }
+
+  /* ページ全体：通常は余白あり、印刷時はゼロにする */
+  .page{padding:16px 20px; height:100%; box-sizing:border-box; display:flex; flex-direction:column;}
+
+  /* ヘッダ */
+  header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8mm; min-height:20mm;}
+  header h1{font-size:24px;margin:0;font-weight:700}
+  .meta{font-size:12px;color:var(--sub);text-align:right}
+
+  /* 2カラム本体：左固定幅+右可変 */
+  .grid{
+    display:grid;
+    grid-template-columns:320px 1fr;
+    gap:12px;
+    flex:1 1 auto;
+    min-height:0;
+  }
+
+  /* 左右カラム：通常表示の行高（ブラウザ上プレビュー向け） */
+  .left{
+    display:grid;
+    grid-template-rows: 34mm 32mm 50mm 50mm;
+    row-gap:4mm; min-height:0;
+  }
+  .right{
+    display:grid;
+    grid-template-rows: 68mm 54mm 54mm;
+    row-gap:4mm; min-height:0;
+  }
+
+  /* カード：枠内で中身が縮む構造 */
+  .card{border:1px solid var(--line);border-radius:8px;background:#fff;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .card h3{margin:12px 12px 8px 12px;font-size:14px;flex:0 0 auto}
+  .card-body{flex:1 1 auto;min-height:0;padding:0 12px 12px 12px;display:block;overflow:hidden}
+  .muted{background:#f8fafc}
+
+  /* カード内の2分割 */
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px;height:100%}
+
+  /* 画像・図・表は card-body 高さに収める */
+  .card-body img, .card-body svg, .card-body canvas{
+    max-width:100%; max-height:100%; height:auto; object-fit:contain; display:block; margin:0 auto;
+  }
+  img.resp{max-width:100%;height:auto;border-radius:6px;border:1px solid #e5e7eb}
+  img.radar{ max-height:100%; object-fit:contain; }
+
+  /* キー・バリューの表 */
+  .kv{display:grid;grid-template-columns:110px 1fr;gap:6px 8px;font-size:13px}
+
+  /* 指標テーブル（左：名前／右：値） */
+  .table-kv{
+    width:100%;
+    border-collapse:collapse;
+    font-size:12px;
+  }
+  .table-kv th,
+  .table-kv td{
+    padding:6px 8px;
+    border-bottom:1px solid #e5e7eb;
+    vertical-align:top;
+  }
+  .table-kv th{ text-align:left; color:#374151; width:60%; font-weight:600; }
+  .table-kv td{ text-align:right; font-variant-numeric:tabular-nums; color:#111827; }
+
+  /* ダミー枠 */
+  .placeholder{background:#f3f4f6;border:1px dashed #cbd5e1;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#9ca3af}
+  .ph-img{width:100%;height:140px}
+  .ph-wide{width:100%;height:120px}
+
+  /* ===== 印刷時の確実1ページ化オーバーライド ===== */
+  @media print{
+    /* ページ内余白ゼロ化で有効領域を最大化 */
+    .page{ padding:0; }
+
+    /* ヘッダを薄く＆改ページ禁止 */
+    header{
+      margin-bottom:4mm;
+      min-height:12mm;   /* 20 → 12mm に圧縮 */
+      break-after: avoid;
+      page-break-after: avoid;
+    }
+    header h1{ font-size:22px; }
+
+    /* 左右カラムの行高をさらに安全側に再配分（総和＋gap < 190mm） */
+    .left{
+      grid-template-rows: 30mm 28mm 48mm 48mm; /* 154mm */
+      row-gap:3mm;                              /* +9 → 163mm */
+    }
+    .right{
+      grid-template-rows: 60mm 52mm 52mm;       /* 164mm */
+      row-gap:3mm;                              /* +6 → 170mm */
+    }
+
+    /* テキストとカードの密度を少し上げる */
+    body{ font-size:12px; }
+    .card h3{ margin:8px 10px 6px 10px; }
+    .card-body{ padding:0 10px 10px 10px; }
+
+    /* 改ページ抑止（割れやすいブロック） */
+    .card, .two-col, .grid > *{ break-inside: avoid; page-break-inside: avoid; }
+
+    /* 画像はみ出し防止 */
+    .card-body img, .card-body svg, .card-body canvas{ max-height:100%; height:auto; object-fit:contain; }
+  }
+</style>
+</head>
+<body class="sheet">
+<div class="page">
+
+  <header>
+    <h1>レポート案　野球スイング</h1>
+    <div class="meta">
+      <div>{{ meta.date or '' }}</div>
+      <div>選手名：{{ player_name or meta.player_name or meta.athlete_name or '—' }}</div>
+      <div>ファイル名：{{ meta.filename or '—' }}</div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- 左ペイン -->
+    <div class="left">
+      <div class="card">
+        <h3>基本情報</h3>
+        <div class="card-body">
+          <div class="kv">
+            <div>選手名</div><div>{{ player_name or meta.player_name or meta.athlete_name or '—' }}</div>
+            <div>身長</div><div>{{ meta.height_cm or '—' }} cm</div>
+            <div>体重</div><div>{{ meta.weight_kg or '—' }} kg</div>
+            <div>足の大きさ</div><div>{{ meta.foot_size_cm or '—' }} cm</div>
+            <div>右/左打ち</div><div>{{ meta.handedness or '—' }}</div>
+            <div>ステップ幅</div><div>{{ meta.step_width_cm or '—' }} cm</div>
+            <div>計測時間</div><div>{{ meta.duration_sec or '—' }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>CoP軌跡</h3>
+        <div class="card-body">
+          <div class="placeholder ph-img">（写真/CoPダミー）</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>左右Fz</h3>
+        <div class="card-body">
+          {% if fz_uri %}
+            <img class="resp" src="{{ fz_uri }}" alt="左右Fz グラフ">
+          {% else %}
+            <div class="placeholder ph-wide">（左右Fz グラフなし）</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Tz</h3>
+        <div class="card-body">
+          {% if tz_uri %}
+            <img class="resp" src="{{ tz_uri }}" alt="Tz グラフ">
+          {% else %}
+            <div class="placeholder ph-wide">（Tz グラフなし）</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- 右ペイン -->
+    <div class="right">
+      <div class="card muted">
+        <h3>重心移動指標</h3>
+        <div class="card-body">
+          <div class="two-col">
+            <div style="overflow:hidden;">
+              {% if cog_html %}
+                {{ cog_html | safe }}
+              {% elif cog_metrics %}
+                <table class="table table-sm" style="width:100%;font-size:12px;border-collapse:collapse">
+                  <thead><tr><th style="text-align:left;border-bottom:1px solid #e5e7eb">指標</th><th style="text-align:right;border-bottom:1px solid #e5e7eb">値</th></tr></thead>
+                  <tbody>
+                    {% for k, v in cog_metrics.items() %}
+                      <tr>
+                        <td style="padding:4px 6px;border-bottom:1px solid #f1f5f9">{{ k }}</td>
+                        <td style="padding:4px 6px;text-align:right;border-bottom:1px solid #f1f5f9">{{ "%.3f"|format(v) if v is number else v }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% else %}
+                <div class="placeholder ph-wide">（指標なし）</div>
+              {% endif %}
+            </div>
+            <div style="overflow:hidden;display:flex;align-items:center;justify-content:center;">
+              {% if radar_uri %}
+                <img class="resp radar" src="{{ radar_uri }}" alt="重心移動指標レーダー">
+              {% else %}
+                <div class="placeholder ph-wide">（レーダーなし）</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+    <div class="card">
+      <h3>地面反力指標</h3>
+      <div class="card-body">
+        {% if grf %}
+          <table class="table-kv">
+            <tbody>
+              <tr>
+                <th>踏込足 直進床反力ピーク（体重%）</th>
+                <td>{{ "%.1f"|format(100*(grf.step.peakBW or 0)) }}%</td>
+              </tr>
+              <tr>
+                <th>踏込足 RFD</th>
+                <td>{{ "%.1f"|format(grf.step.rfdN or 0) }} N/s</td>
+              </tr>
+              <tr>
+                <th>軸足 直進床反力ピーク（体重%）</th>
+                <td>{{ "%.1f"|format(100*(grf.axis.peakBW or 0)) }}%</td>
+              </tr>
+              <tr>
+                <th>軸足 RFD</th>
+                <td>{{ "%.1f"|format(grf.axis.rfdN or 0) }} N/s</td>
+              </tr>
+              <tr>
+                <th>合成床反力 力積</th>
+                <td>{{ "%.1f"|format(grf.impulse or 0) }} N·s</td>
+              </tr>
+            </tbody>
+          </table>
+        {% else %}
+          <div class="placeholder ph-wide">（指標なし）</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>回転動作指標</h3>
+      <div class="card-body">
+        {% if rot %}
+          <table class="table-kv">
+            <tbody>
+              <tr>
+                <th>軸回転トルク ピーク</th>
+                <td>{{ "%.1f"|format(rot.peak or 0) }} Nm</td>
+              </tr>
+              <tr>
+                <th>軸回転トルク ピーク（体重%）</th>
+                <td>{{ "%.1f"|format(100*(rot.peakBW or 0)) }}%</td>
+              </tr>
+              <tr>
+                <th>RFD（回転）</th>
+                <td>{{ "%.1f"|format(rot.rfd or 0) }} Nm/s</td>
+              </tr>
+              <tr>
+                <th>回転トルク 力積</th>
+                <td>{{ "%.1f"|format(rot.impulse or 0) }} Nm·s</td>
+              </tr>
+            </tbody>
+          </table>
+        {% else %}
+          <div class="placeholder ph-wide">（指標なし）</div>
+        {% endif %}
+      </div>
+    </div>
+
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

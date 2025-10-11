@@ -1,0 +1,16 @@
+{
+  "global": {
+    "developmentMode": false
+  },
+  "server": {
+    "address": "0.0.0.0",
+    "port": 8501,
+    "headless": true,
+    "gatherUsageStats": false,
+    "browserServerAddress": "",
+    "enableXsrfProtection": true
+  },
+  "data": {
+    "root":"C:/Users/marin/Documents/02_FIT/06_ForcePlateReport/03_data"
+  }
+}
