@@ -1,370 +1,274 @@
 # pages/GraphViewer.py
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
-import json, base64, textwrap
+from typing import Dict, List, Optional, Tuple
 
-import numpy as np
-import pandas as pd
 import streamlit as st
-import plotly.graph_objs as go
-import streamlit.components.v1 as components
-from string import Template
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import cv2
+from PIL import Image
 
-st.set_page_config(page_title="CSV Graph Viewer", layout="wide")
-st.title("CSV Graph Viewer）")
-
-# ========= Utils =========
+# ---- CSV 読み込み（キャッシュ） ----
 @st.cache_data(show_spinner=False)
-def _read_csv_cached(path: str) -> pd.DataFrame:
-    p = Path(path)
-    mtime = p.stat().st_mtime if p.exists() else 0.0
-    _ = (path, mtime)  # cache key
-    for enc in ("utf-8-sig", "cp932"):
-        try:
-            return pd.read_csv(p, encoding=enc)
-        except Exception:
-            continue
-    return pd.read_csv(p)
+def _read_csv(p: str) -> Optional[pd.DataFrame]:
+    try:
+        return pd.read_csv(p)
+    except Exception as e:
+        st.error(f"CSV読み込みに失敗: {p}\n{e}")
+        return None
 
-def _common_columns(dfs: List[pd.DataFrame]) -> List[str]:
-    cols = set(dfs[0].columns)
-    for d in dfs[1:]:
-        cols &= set(d.columns)
-    return list(cols)
+# ---- 軸候補ユーティリティ ----
+def _to_num(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce")
 
-def _common_numeric_columns(dfs: List[pd.DataFrame], exclude: List[str]) -> List[str]:
-    commons = [c for c in _common_columns(dfs) if c not in exclude]
+def _to_dt(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s, errors="coerce")
+
+def _numeric_cols(df: pd.DataFrame, exclude: List[str] | None = None) -> List[str]:
+    exclude = set(exclude or [])
     out = []
-    for c in commons:
-        ok = True
-        for df in dfs:
-            if pd.to_numeric(df[c], errors="coerce").notna().sum() == 0:
-                ok = False; break
-        if ok:
+    for c in df.columns:
+        if c in exclude:
+            continue
+        num = _to_num(df[c])
+        if num.notna().sum() > 0:
             out.append(c)
     return out
 
-def _to_numeric_series(s: pd.Series) -> pd.Series:
-    return pd.to_numeric(s, errors="coerce")
+def _x_candidates(df: pd.DataFrame) -> List[str]:
+    # datetimeっぽい列を優先、次に数値列
+    dt_like = [c for c in df.columns if any(k in c.lower() for k in ["time", "date", "timestamp"])]
+    dt_like = [c for c in dt_like if _to_dt(df[c]).notna().sum() > 0]
+    nums = _numeric_cols(df)
+    # 重複排除して結合
+    seen, out = set(), []
+    for c in dt_like + nums:
+        if c not in seen:
+            out.append(c); seen.add(c)
+    return out or list(df.columns)
 
-def _to_x_series(s: pd.Series) -> Tuple[pd.Series, str]:
-    num = pd.to_numeric(s, errors="coerce")
-    if num.notna().mean() > 0.8:
-        return num, "numeric"
-    dt = pd.to_datetime(s, errors="coerce", infer_datetime_format=True)
-    if dt.notna().mean() > 0.8:
-        return dt, "datetime"
-    return s.astype(str), "category"
-
-def _downsample_xy(x: pd.Series, y: pd.Series, max_points: int = 3000):
-    n = len(x)
-    if n <= max_points or max_points <= 0:
-        return x, y
-    step = int(np.ceil(n / max_points))
-    return x.iloc[::step], y.iloc[::step]
-
-def _get_saved_range_for(path: str):
-    return st.session_state.get("graph_ranges", {}).get(path)
-
-def _set_range_for(paths: List[str], x_col: str, kind: str, start, end):
-    st.session_state.setdefault("graph_ranges", {})
-    for p in paths:
-        st.session_state["graph_ranges"][p] = {
-            "x_col": x_col, "kind": kind,
-            "start": pd.to_datetime(start).isoformat() if kind=="datetime" else float(start),
-            "end":   pd.to_datetime(end).isoformat()   if kind=="datetime" else float(end),
-        }
-
+# ---- 動画関連 ----
 def _guess_mp4_value(row: Dict) -> Optional[str]:
-    # 列名に mp4 / video を含む列を優先
-    for key in row.keys():
-        if "mp4" in str(key).lower() or "video" in str(key).lower():
-            v = str(row.get(key, "")).strip()
-            if v:
-                return v
-    # 値が .mp4 で終わるもの
-    for _, v in row.items():
-        s = str(v).strip()
-        if s.lower().endswith(".mp4"):
-            return s
+    for k in ["mp4", "video", "movie", "Video", "MP4", "path_video"]:
+        if k in row and str(row[k]).strip():
+            return str(row[k]).strip()
     return None
 
-def _resolve_media_path(value: str, data_dir: str) -> Path:
-    p = Path(value)
-    return p if p.is_absolute() else (Path(data_dir) / p).resolve()
+def _resolve_media_path(mp4_value: str | Path, data_dir: str | Path) -> Path:
+    p = Path(str(mp4_value))
+    if p.exists():
+        return p
+    return Path(data_dir) / p.name
 
-@st.cache_data(show_spinner=False)
-def _read_file_bytes(path: str) -> bytes:
-    p = Path(path)
-    _ = (str(p), p.stat().st_mtime if p.exists() else 0.0)  # cache key
-    return p.read_bytes()
+def _guess_time_mapping(df: pd.DataFrame) -> Tuple[str, str]:
+    """
+    秒列 or 日時列 があれば使う。なければ index を time とする。
+    戻り値: (列名 or "__index__", kind)  kind in {"seconds","datetime","index"}
+    """
+    sec_names = {"t","time","sec","seconds","elapsed","elapsed_s"}
+    for c in df.columns:
+        if c.lower() in sec_names and _to_num(df[c]).notna().any():
+            return c, "seconds"
+    for c in df.columns:
+        if any(k in c.lower() for k in ["time","date","timestamp"]) and _to_dt(df[c]).notna().any():
+            return c, "datetime"
+    return "__index__", "index"
 
-def _b64_data_url_mp4(p: Path) -> str:
-    data = _read_file_bytes(str(p))
-    b64 = base64.b64encode(data).decode("ascii")
-    return f"data:video/mp4;base64,{b64}"
+def _extract_frame_cv2(video_path: Path, seconds: float) -> Optional[Image.Image]:
+    if not video_path or not video_path.exists():
+        return None
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+    cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, seconds) * 1000.0)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok or frame is None:
+        return None
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(frame)
 
-# ========= Home からの選択 =========
-records: List[Dict] | None = st.session_state.get("selected_records")
-if not records:
-    st.info("メイン画面（Home）でCSVを選択してください。")
-    st.page_link("Home.py", label="← メインに戻る", icon="⏪")
-    st.stop()
+# ---- ページ本体 ----
+def main():
+    st.set_page_config(page_title="CSV Graph Viewer", layout="wide")
+    st.title("動画＆グラフビュワー")
+    st.caption("選択したデータごとに動画とグラフを見ながら、グラフの開始・終了位置を指定して保存できます。")
 
-labels: List[str] = []
-path_map: Dict[str, str] = {}
-rec_map: Dict[str, Dict] = {}
-for i, rec in enumerate(records, start=1):
-    row = rec.get("row", {})
-    csv_path = rec.get("csv_path", "")
-    name = row.get("name") or row.get("title") or Path(csv_path).name
-    label = f"{i}. {name} ({Path(csv_path).name})"
-    labels.append(label)
-    path_map[label] = csv_path
-    rec_map[label] = rec
+    # Home 側で保存された選択：リスト仕様
+    records: List[Dict] = st.session_state.get("selected_records") or []
+    if not records:
+        st.info("Home でデータ行を選択してください。")
+        st.stop()
 
-# Home の既定選択を反映
-default_labels = labels
-sel_paths_state = st.session_state.get("selected_csv_paths")
-if sel_paths_state:
-    path_to_label = {v: k for k, v in path_map.items()}
-    chosen = [path_to_label[p] for p in sel_paths_state if p in path_to_label]
-    if chosen:
-        default_labels = chosen
+    # ラベルとパスのマップを構築
+    labels: List[str] = []
+    path_map: Dict[str, str] = {}
+    rec_map: Dict[str, Dict] = {}
+    for i, rec in enumerate(records, start=1):
+        row = rec.get("row", {}) or {}
+        csv_path = rec.get("csv_path", "")
+        name = row.get("name") or row.get("title") or Path(csv_path).name
+        label = f"{i}. {name} ({Path(csv_path).name})"
+        labels.append(label)
+        path_map[label] = csv_path
+        rec_map[label] = rec
 
-# ========= レイアウト =========
-left, right = st.columns([1, 2], gap="large")
+    # 単一選択（重ね書き禁止）
+    lab = st.selectbox("表示するデータ", options=labels, index=0)
+    rec = rec_map[lab]
+    row = rec.get("row", {}) or {}
+    data_dir = rec.get("data_dir", "") or str(Path(__file__).parents[1] / "data")
+    csv_path = path_map[lab]
 
-with left:
-    st.subheader("データ & 軸の選択")
-    sel = st.multiselect("表示するデータ（複数可）", options=labels, default=default_labels)
-    if not sel:
-        st.warning("1つ以上のデータを選択してください。"); st.stop()
+    df = _read_csv(csv_path)
+    if df is None or df.empty:
+        st.error(f"空のCSVか読み込み失敗: {csv_path}")
+        st.stop()
 
-    dfs: List[pd.DataFrame] = []
-    sel_paths: List[str] = []
-    for lab in sel:
-        p = path_map[lab]
-        if not Path(p).exists():
-            st.error(f"CSVが見つかりません: {p}"); continue
-        df = _read_csv_cached(p)
-        if df is None or df.empty:
-            st.warning(f"空のCSVの可能性: {p}"); continue
-        dfs.append(df); sel_paths.append(p)
-    if not dfs:
-        st.error("有効なCSVが読み込めませんでした。"); st.stop()
+    # ---- 2カラム：左=動画、右=設定＋グラフ＋スナップ ----
+    left, right = st.columns([1, 1.4])
 
-    common_cols = _common_columns(dfs)
-    if not common_cols:
-        st.error("選択されたCSV間に共通する列がありません。"); st.stop()
-
-    x_default = "Time" if "Time" in common_cols else common_cols[0]
-    x_col = st.selectbox("横軸 (X)", options=sorted(common_cols), index=sorted(common_cols).index(x_default))
-
-    y_candidates = _common_numeric_columns(dfs, exclude=[x_col])
-    y_cols = st.multiselect(
-        "縦軸 (Y)（共通して数値変換できる列）",
-        options=sorted(y_candidates),
-        default=[c for c in ["LFz", "RFz", "MTz"] if c in y_candidates] or (y_candidates[:1] if y_candidates else []))
-    if not y_cols:
-        st.warning("縦軸 (Y) を1つ以上選択してください。"); st.stop()
-
-with right:
-    # ======== 動画＋グラフ（同期） ========
-    st.subheader("動画 & グラフ（動画の再生位置に赤ラインを同期）")
-
-    # どの動画を使うか（選択行から mp4 推定）
-    video_labels: List[str] = []
-    video_paths: Dict[str, Path] = {}
-    for lab in sel:
-        rec = rec_map[lab]
-        row = rec.get("row", {})
-        data_dir = rec.get("data_dir", "") or str(Path(__file__).parents[1] / "data")
+    # 左：動画（同期しない埋め込み）
+    with left:
+        st.subheader("動画")
         mp4_val = _guess_mp4_value(row)
-        if not mp4_val:
-            continue
-        resolved = _resolve_media_path(mp4_val, data_dir)
-        video_labels.append(lab)
-        video_paths[lab] = resolved
-
-    if not video_labels:
-        st.info("選択された行に mp4 の列（または .mp4 の値）が見つかりませんでした。Datalist の mp4 欄を確認してください。")
         current_video_path: Optional[Path] = None
-    else:
-        lab_sel = st.selectbox("表示する動画（選択CSVの中から）", options=video_labels)
-        current_video_path = video_paths[lab_sel]
-        if not current_video_path.exists():
-            st.warning(f"動画ファイルが見つかりませんでした: {current_video_path.as_posix()}")
-            current_video_path = None
-
-    # ===== 全体レンジ =====
-    x_series_first, x_kind = _to_x_series(dfs[0][x_col])
-    x_min_all = x_series_first.min()
-    x_max_all = x_series_first.max()
-
-    # ===== 保存済みレンジ（代表は先頭） =====
-    st.session_state.setdefault("graph_ranges", {})
-    rep_path = sel_paths[0]
-    saved = _get_saved_range_for(rep_path)
-
-    if x_kind == "datetime":
-        cur_start = pd.to_datetime(saved["start"]) if saved and saved.get("kind")=="datetime" else pd.to_datetime(x_min_all)
-        cur_end   = pd.to_datetime(saved["end"])   if saved and saved.get("kind")=="datetime" else pd.to_datetime(x_max_all)
-    else:
-        x_min_f = float(pd.to_numeric(pd.Series([x_min_all]), errors="coerce").iloc[0])
-        x_max_f = float(pd.to_numeric(pd.Series([x_max_all]), errors="coerce").iloc[0])
-        if saved and saved.get("kind")=="numeric":
-            cur_start, cur_end = float(saved["start"]), float(saved["end"])
+        if mp4_val:
+            resolved = _resolve_media_path(mp4_val, data_dir)
+            if resolved.exists():
+                current_video_path = resolved
+                st.video(str(resolved))
+            else:
+                st.warning(f"動画が見つかりません: {resolved.as_posix()}")
         else:
-            cur_start, cur_end = x_min_f, x_max_f
+            st.info("この行に mp4 情報がありません。Datalist の mp4 欄をご確認ください。")
 
-    # ===== グラフ用データを準備（JSへ渡す） =====
-    # Xは「動画0秒＝CSV最小X」に合わせるため、JS内で秒に正規化して使う
-    x0_for_video = x_min_all  # 動画0秒に相当するX
-    traces = []
-    for lab, df, p in zip(sel, dfs, sel_paths):
-        x_raw = df[x_col]
-        x_ser, _ = _to_x_series(x_raw)
+    # 右：軸選択・グラフ・スナップ
+    with right:
+        st.subheader("グラフ設定")
 
-        # 表示レンジで抽出
-        if x_kind == "datetime":
-            x_dt = pd.to_datetime(x_ser)
-            mask = (x_dt >= pd.to_datetime(cur_start)) & (x_dt <= pd.to_datetime(cur_end))
-            x_in = x_dt[mask]
-            x_sec = (pd.to_datetime(x_in) - pd.to_datetime(x0_for_video)).dt.total_seconds()
+        # X, Y の選択
+        x_opts = _x_candidates(df)
+        # 既定は timestamp/time/Date 系があればそれ、なければ先頭
+        default_x = 0
+        for cand in ["timestamp", "Timestamp", "time", "Time", "date", "Date"]:
+            if cand in x_opts:
+                default_x = x_opts.index(cand); break
+        x_col = st.selectbox("横軸 (X)", options=x_opts, index=default_x)
+
+        y_opts = _numeric_cols(df, exclude=[x_col])
+        if not y_opts:
+            st.error("数値の縦軸候補が見つかりません。"); st.stop()
+        y_default = "LFz" if "LFz" in y_opts else y_opts[0]
+        y_col = st.selectbox("縦軸 (Y)", options=sorted(y_opts), index=sorted(y_opts).index(y_default))
+
+        # データの準備
+        x_for_plot = df[x_col]
+        y_vals = pd.to_numeric(df[y_col], errors="coerce")
+
+        idx_max = max(0, len(df) - 1)
+        col1, col2 = st.columns(2)
+        with col1:
+            gv_idx_start = st.slider("開始位置（赤ライン）", 0, idx_max, value=int(st.session_state.get("gv_idx_start", 0)))
+        with col2:
+            gv_idx_end = st.slider("終了位置（青ライン）", 0, idx_max, value=int(st.session_state.get("gv_idx_end", min(10, idx_max))))
+
+        x_val_start = x_for_plot.iloc[gv_idx_start]
+        x_val_end = x_for_plot.iloc[gv_idx_end]
+
+        # Plotly 図：2本のラインを追加
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x_for_plot, y=y_vals, mode="lines", name=f"{Path(csv_path).name}:{y_col}"))
+
+        y_min = float(np.nanmin(y_vals)) if np.isfinite(y_vals).any() else 0.0
+        y_max = float(np.nanmax(y_vals)) if np.isfinite(y_vals).any() else 1.0
+
+        # 赤ライン（start）
+        fig.add_shape(
+            type="line",
+            x0=x_val_start, x1=x_val_start,
+            y0=y_min, y1=y_max,
+            line=dict(color="red", width=2),
+        )
+        # 青ライン（end）
+        fig.add_shape(
+            type="line",
+            x0=x_val_end, x1=x_val_end,
+            y0=y_min, y1=y_max,
+            line=dict(color="blue", width=2),
+        )
+
+        fig.update_layout(
+            xaxis_title=x_col, yaxis_title=y_col,
+            height=420, margin=dict(l=10, r=10, t=10, b=10),
+            showlegend=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # スナップショット表示
+        st.subheader("スナップショット（赤=開始 / 青=終了）")
+
+        if mp4_val:
+            t_col, t_kind = _guess_time_mapping(df)
+
+            def _time_sec(idx: int) -> float:
+                """スライダーindex→動画内秒"""
+                if t_kind == "seconds":
+                    return float(_to_num(df[t_col].iloc[idx]) or 0.0)
+                elif t_kind == "datetime":
+                    dts = _to_dt(df[t_col])
+                    dt0, dti = dts.iloc[0], dts.iloc[idx]
+                    if pd.isna(dt0) or pd.isna(dti):
+                        return float(idx)
+                    return max(0.0, (dti - dt0).total_seconds())
+                else:
+                    return float(idx)
+
+            # start / end それぞれの時刻に対応するフレームを抽出
+            t_start = _time_sec(gv_idx_start)
+            t_end = _time_sec(gv_idx_end)
+
+            img_start = _extract_frame_cv2(_resolve_media_path(mp4_val, data_dir), t_start)
+            img_end = _extract_frame_cv2(_resolve_media_path(mp4_val, data_dir), t_end)
+
+            c1, c2 = st.columns(2)
+            if img_start:
+                c1.image(img_start, caption=f"Start (赤) @ {t_start:.3f}s", use_container_width=True)
+            else:
+                c1.warning("開始位置のフレーム取得に失敗しました。")
+
+            if img_end:
+                c2.image(img_end, caption=f"End (青) @ {t_end:.3f}s", use_container_width=True)
+            else:
+                c2.warning("終了位置のフレーム取得に失敗しました。")
+
         else:
-            x_num = pd.to_numeric(x_ser, errors="coerce")
-            mask = (x_num >= float(cur_start)) & (x_num <= float(cur_end))
-            x_in = x_num[mask]
-            # 数値はそのまま「秒」として扱う
-            x_sec = pd.to_numeric(x_in, errors="coerce")
+            st.info("動画が無いのでスナップショットは表示できません。")
 
-        for yc in y_cols:
-            y = _to_numeric_series(df[yc])[mask]
-            x_plot, y_plot = _downsample_xy(x_sec, y, max_points=3000)
-            traces.append({
-                "name": f"{Path(p).name}:{yc}",
-                "x": x_plot.astype(float).fillna(method="pad").fillna(0.0).tolist(),
-                "y": pd.to_numeric(y_plot, errors="coerce").fillna(method="pad").fillna(0.0).tolist(),
-            })
+        # 状態保存
+        st.session_state["gv_idx_start"] = int(gv_idx_start)
+        st.session_state["gv_idx_end"] = int(gv_idx_end)
 
-    # X軸の初期レンジ（秒単位）
-    if x_kind == "datetime":
-        init_x0 = float((pd.to_datetime(cur_start) - pd.to_datetime(x0_for_video)).total_seconds())
-        init_x1 = float((pd.to_datetime(cur_end)   - pd.to_datetime(x0_for_video)).total_seconds())
-    else:
-        init_x0 = float(cur_start) - (float(x0_for_video) if isinstance(x0_for_video, (int,float,np.floating)) else 0.0)
-        init_x1 = float(cur_end)   - (float(x0_for_video) if isinstance(x0_for_video, (int,float,np.floating)) else 0.0)
+        # 💾 値を保持するボタン
+        st.markdown("---")
+        if "graph_ranges" not in st.session_state:
+            st.session_state["graph_ranges"] = {}
 
-    # 動画データURL（bytes→base64）
-    video_data_url = _b64_data_url_mp4(current_video_path) if current_video_path else ""
+        if st.button("💾 このデータの開始・終了位置を保持"):
+            st.session_state["graph_ranges"][lab] = {
+                "start": int(gv_idx_start),
+                "end": int(gv_idx_end),
+            }
+            st.success(f"保持しました：{lab}（Start={gv_idx_start}, End={gv_idx_end}）")
+    
+    go_report = st.button("📝 レポートを開く", type="primary")
+    if go_report:
+        dest = "pages/Report.py"
+        st.switch_page(dest)
 
-    # ===== HTMLコンポーネント（video + plotly） =====
-    traces_json = json.dumps(traces)
 
-    html_template = Template("""
-    <div style="display:flex; flex-direction:column; gap:10px; width:100%;">
-    <video id="vid" controls style="width:100%; max-height:360px; background:#000;" src="$video_data_url"></video>
-    <div id="chart" style="width:100%; height:520px;"></div>
-    </div>
-    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
-    <script>
-    const traces = $traces_json;
-    const layout = {
-        margin: {l: 35, r: 10, t: 10, b: 30},
-        hovermode: "x unified",
-        showlegend: true,
-        xaxis: {
-        title: "Time (s)",
-        range: [$init_x0, $init_x1],
-        showgrid: true
-        },
-        yaxis: {
-        showgrid: true
-        },
-        shapes: [
-        {
-            type: 'line',
-            x0: $init_x0, x1: $init_x0,
-            y0: 0, y1: 1,
-            xref: 'x', yref: 'paper',
-            line: {color: 'red', width: 2}
-        }
-        ]
-    };
-    const data = traces.map(t => ({
-        type: 'scattergl',
-        mode: 'lines',
-        name: t.name,
-        x: t.x,
-        y: t.y,
-        line: {width: 2}
-    }));
-    const chart = document.getElementById('chart');
-    Plotly.newPlot(chart, data, layout, {displaylogo:false, responsive:true});
 
-    // 動画の再生位置で赤ラインを動かす（動画0秒 = X軸0秒）
-    const vid = document.getElementById('vid');
-    function updateVline(){
-        const t = vid.currentTime || 0;  // 秒
-        Plotly.relayout(chart, {
-        'shapes[0].x0': t,
-        'shapes[0].x1': t
-        });
-    }
-    vid.addEventListener('timeupdate', updateVline);
-    vid.addEventListener('seeking', updateVline);
-    vid.addEventListener('seeked', updateVline);
-    vid.addEventListener('play', updateVline);
-
-    // グラフをクリックした位置に動画をジャンプ（逆同期）
-    chart.on('plotly_click', function(ev){
-        if (!ev || !ev.points || !ev.points.length) return;
-        const x = ev.points[0].x;
-        try {
-        vid.currentTime = Math.max(0, Number(x));
-        updateVline();
-        } catch(e) {}
-    });
-    </script>
-    """)
-
-    html = html_template.substitute(
-        traces_json=traces_json,
-        init_x0=str(init_x0),
-        init_x1=str(init_x1),
-        video_data_url=video_data_url
-    )
-
-    components.html(html, height=920, scrolling=False)
-
-    # ===== 下スライダー（プレビュー）＋ 再描画ボタン =====
-    st.markdown("#### 解析範囲（プレビュー）— ボタンで確定して再描画")
-    if x_kind == "datetime":
-        preview_start, preview_end = st.slider(
-            "対象区間（日時）",
-            min_value=pd.to_datetime(x_min_all),
-            max_value=pd.to_datetime(x_max_all),
-            value=(pd.to_datetime(cur_start), pd.to_datetime(cur_end)),
-            key=f"gv_preview_dt_{x_col}",
-        )
-        if st.button("再描画（この範囲を確定）", type="primary"):
-            _set_range_for(sel_paths, x_col, "datetime", preview_start, preview_end)
-            st.rerun()
-        st.caption(f"プレビュー中：{preview_start} ～ {preview_end}")
-    else:
-        x_min_f = float(pd.to_numeric(pd.Series([x_min_all]), errors="coerce").iloc[0])
-        x_max_f = float(pd.to_numeric(pd.Series([x_max_all]), errors="coerce").iloc[0])
-        preview_start, preview_end = st.slider(
-            "対象区間（数値）",
-            min_value=x_min_f, max_value=x_max_f,
-            value=(float(cur_start), float(cur_end)),
-            key=f"gv_preview_num_{x_col}",
-        )
-        if st.button("再描画（この範囲を確定）", type="primary"):
-            _set_range_for(sel_paths, x_col, "numeric", preview_start, preview_end)
-            st.rerun()
-        st.caption(f"プレビュー中：{preview_start:.3f} ～ {preview_end:.3f}")
-
-    st.page_link("pages/Report.py", label="→ レポートを開く（保存済みの範囲が連動）", icon="📄")
+if __name__ == "__main__":
+    main()
