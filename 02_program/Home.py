@@ -1,450 +1,305 @@
-# Home.py
 from pathlib import Path
 import pandas as pd
 import streamlit as st
 import re
-from pathlib import Path
 from datetime import date
 
-def _records_from_selected(df_sel, csv_col: str):
-    recs = []
-    for _, r in df_sel.iterrows():
-        row_dict = r.to_dict()
-        csv_value = str(row_dict.get(csv_col, "")).strip()
-        csv_path = Path(csv_value)
-        if not csv_path.is_absolute():
-            csv_path = (DATA_DIR / csv_path).resolve()
-        recs.append({
-            "row": row_dict,
-            "csv_col": csv_col,
-            "csv_path": csv_path.as_posix(),
-            "data_dir": DATA_DIR.as_posix(),
-            "datalist_path": DATALIST_PATH.as_posix(),
-        })
-    return recs
+# -------------------------------------------------
+# ページ設定
+# -------------------------------------------------
+st.set_page_config(page_title="メイン | 計測データ管理", layout="wide")
 
-st.set_page_config(page_title="メイン | 試験結果ビューア", layout="wide")
+st.title("メイン画面（計測データ管理）")
+st.caption("data/ 内の *_FP.csv を自動検出して台帳(datalist.csv)に反映します。")
+st.caption("右側で動画を確認しながら1件ずつ player / 身長 / 体重 などを確定して保存できます。")
 
-st.title("メイン画面（選手情報記入＆データ選択）")
-st.caption("期間内のデータからレポート作成するデータを選択します。")
-st.caption("選手情報は playerlist.csv に保存され、次回以降も利用されます。")
-
-
-# ---- パス前提：このファイルと同階層に data/ フォルダ ----
+# -------------------------------------------------
+# パス定義
+# -------------------------------------------------
 APP_DIR = Path(__file__).parent.resolve()
 DATA_DIR = APP_DIR / "data"
-DATALIST_PATH = DATA_DIR / "Datalist.csv"
-PLAYERLIST_PATH = (DATA_DIR / "playerlist.csv")
 
+# datalist は小文字優先、なければ Datalist.csv を救済
+DATALIST_PATH = DATA_DIR / "datalist.csv"
+if not DATALIST_PATH.exists():
+    legacy = DATA_DIR / "Datalist.csv"
+    if legacy.exists():
+        DATALIST_PATH = legacy
 
-# ---- セッション初期化 ----
-st.session_state.setdefault("logs", [])
-st.session_state.setdefault("basic", {
-    "player_name":"", "height_cm":"", "weight_kg":"",
-    "foot_size_cm":"", "handedness":"右", "step_width_cm":""
-})
-
-# ---- data/ の存在確認 ----
+# -------------------------------------------------
+# dataディレクトリ存在チェック
+# -------------------------------------------------
 if not DATA_DIR.exists():
     st.error(f"data フォルダが見つかりません: {DATA_DIR.as_posix()}")
     st.stop()
 
-# ---- Datalist.csv 読み込み ----
-if not DATALIST_PATH.exists():
-    st.error(f"Datalist.csv が見つかりません: {DATALIST_PATH.as_posix()}")
-    st.info("data/ フォルダに Datalist.csv と、各行が参照する CSV / MP4 を置いてください。")
-    st.stop()
-
-try:
-    df_raw = pd.read_csv(DATALIST_PATH)
-except Exception as e:
-    st.error(f"Datalist.csv の読み込みに失敗: {e}")
-    st.stop()
-
-
-def guess_csv_col(df: pd.DataFrame) -> str:
-    cand = [c for c in df.columns if "csv" in c.lower() or "path" in c.lower()]
-    if cand:
-        return cand[0]
-    for c in df.columns:
-        try:
-            if df[c].astype(str).str.contains(r"\.csv$", case=False, regex=True).any():
-                return c
-        except Exception:
-            pass
-    return df.columns[0]
-
-st.subheader("データ一覧")
-
-# --- 日時列（Datalist.csv 固定: Date + Time） ---
-dt_series = pd.to_datetime(
-    df_raw["Date"].astype(str).str.strip() + " " + df_raw["Time"].astype(str).str.strip(),
-    errors="coerce"
-)
-min_d = dt_series.dt.date.min()
-max_d = dt_series.dt.date.max()
-if pd.isna(min_d) or pd.isna(max_d):
-    # もしCSVに日付が無い/壊れている場合のフェールセーフ
-    today = date.today()
-    min_d = max_d = today
-
-# --- カレンダーUI（選択中の揺れを吸収） ---
-raw_value = st.date_input(
-    "Date 範囲を選択",
-    value=(min_d, max_d),
-    min_value=min_d,
-    max_value=max_d,
-    format="YYYY-MM-DD",
-    key="date_range"
-)
-
-# raw_value が「単日」か「(start, end)」か、選択中で長さ1の可能性もある
-if isinstance(raw_value, tuple):
-    if len(raw_value) == 2:
-        start_date, end_date = raw_value
-    elif len(raw_value) == 1:
-        start_date, end_date = raw_value[0], raw_value[0]  # 一時的に単日に丸める
-    else:
-        start_date, end_date = min_d, max_d
+# -------------------------------------------------
+# datalist.csv の読み込み or 新規作成
+# -------------------------------------------------
+if DATALIST_PATH.exists():
+    try:
+        df_list = pd.read_csv(DATALIST_PATH)
+    except Exception as e:
+        st.error(f"{DATALIST_PATH.name} の読み込みに失敗: {e}")
+        st.stop()
 else:
-    # 単日が返るケース
-    start_date = end_date = raw_value
-
-# どちらかが None の一時状態もケア（未確定の瞬間がある）
-if start_date is None and end_date is None:
-    start_date, end_date = min_d, max_d
-elif start_date is None:
-    start_date = end_date
-elif end_date is None:
-    end_date = start_date
-
-# 万一 start > end になったら入れ替え
-if start_date > end_date:
-    start_date, end_date = end_date, start_date
-
-# --- フィルタ適用（ここまで来れば常に安全） ---
-mask = (dt_series.dt.date >= start_date) & (dt_series.dt.date <= end_date)
-df_base = df_raw.loc[mask].copy()
-
-try:
-    if PLAYERLIST_PATH.exists():
-        pl = pd.read_csv(PLAYERLIST_PATH, encoding="shift_jis")
-
-        # 列名ゆれに少しだけ耐性（player は大小無視で一致、項目は候補から拾う）
-        def _find_col(df, names):
-            cmap = {str(c).strip().lower(): c for c in df.columns}
-            for n in names:
-                k = str(n).strip().lower()
-                if k in cmap:
-                    return cmap[k]
-            return None
-
-        p_d = _find_col(df_base, ["player"])              # datalist 側
-        p_p = _find_col(pl,      ["player"])              # playerlist 側
-        h_p = _find_col(pl,      ["利き手", "handedness", "dominant"])
-        ht_p= _find_col(pl,      ["身長", "height", "height_cm"])
-        wt_p= _find_col(pl,      ["体重", "weight", "weight_kg"])
-
-        if p_d and p_p:
-            use_cols = [p_p]
-            if h_p:  use_cols.append(h_p)
-            if ht_p: use_cols.append(ht_p)
-            if wt_p: use_cols.append(wt_p)
-
-            pl_small = pl[use_cols].copy()
-            # 標準化した列名にそろえる
-            ren = {}
-            if h_p:  ren[h_p]  = "利き手"
-            if ht_p: ren[ht_p] = "身長"
-            if wt_p: ren[wt_p] = "体重"
-            ren[p_p] = "player"
-            pl_small = pl_small.rename(columns=ren)
-
-            # 左外部結合（player キー）
-        df_base = df_base.merge(pl_small.set_index("player"), how="left", left_on=p_d, right_index=True)
-
-        # 欠損は空にしておく（存在しなければ列を作って空）
-        for c in ["利き手", "身長", "体重"]:
-            if c not in df_base.columns:
-                df_base[c] = ""
-            df_base[c] = df_base[c].fillna("")
-
-        # 右端に並ぶように列の順序を最後に回す（既にある場合は pop→末尾追加）
-        for c in ["利き手", "身長", "体重"]:
-            if c in df_base.columns:
-                col = df_base.pop(c)
-                df_base[c] = col
-    else:
-        # ファイルが無い場合は空列を追加
-        for c in ["利き手", "身長", "体重"]:
-            if c not in df_base.columns:
-                df_base[c] = ""
-except Exception as e:
-    st.warning(f"playerlist.csv の読み込み/マージに失敗しました: {e}")
-    # 失敗しても空列で継続
-    for c in ["利き手", "身長", "体重"]:
-        if c not in df_base.columns:
-            df_base[c] = ""
-
-
-csv_col = guess_csv_col(df_base)
-
-# 選択列を付与
-SELECT_COL = "選択"
-df_show = df_base.copy()
-if SELECT_COL not in df_show.columns:
-    df_show.insert(0, SELECT_COL, False)
-
-edited = st.data_editor(
-    df_show,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        SELECT_COL: st.column_config.CheckboxColumn(required=False, help="複数選択できます"),
-    },
-    disabled=False,
-    height=520,
-    key="datalist_editor",
-)
-
-# ===== 不足項目の追加入力（画面上で編集）＆ 反映ボタン =====
-st.subheader("不足しているプレイヤー情報の追加入力")
-# 右端3列が欠損の行を編集対象に（全部編集したい場合は .any()→.notna() などに調整可）
-need_fill_mask = (df_base[["利き手", "身長", "体重"]].isna() | (df_base[["利き手", "身長", "体重"]].astype(str) == "")).any(axis=1)
-edit_src = df_base.loc[need_fill_mask, :].copy()
-
-# 編集用の軽量ビュー（player と 3項目だけ）
-edit_view_cols = []
-# datalist 側の player 列名（p_d）を流用。なければ "player"
-try:
-    edit_player_col = p_d if (p_d in df_base.columns) else ("player" if "player" in df_base.columns else None)
-except NameError:
-    edit_player_col = "player" if "player" in df_base.columns else None
-
-if edit_player_col is None:
-    st.info("この表には player 列が見つからないため、画面上での追加入力は無効です。")
-else:
-    edit_src = edit_src[[edit_player_col, "利き手", "身長", "体重"]].copy()
-    edit_src = edit_src.rename(columns={edit_player_col: "player"})  # 編集は "player" 名で統一
-    edit_src = edit_src.drop_duplicates(subset=["player"])
-    edit_src = edit_src.reset_index(drop=True)
-
-    st.caption("※ 空欄になっているプレイヤーだけを抽出しています。必要事項を入力して『反映』を押してください。")
-    editable = st.data_editor(
-        edit_src,
-        column_config={
-            "player": st.column_config.TextColumn("player", help="キー（変更しないことを推奨）", disabled=True),
-            "利き手": st.column_config.TextColumn("利き手", help="例：右 / 左"),
-            "身長":   st.column_config.NumberColumn("身長", help="cm"),
-            "体重":   st.column_config.NumberColumn("体重", help="kg"),
-        },
-        hide_index=True,
-        use_container_width=True,
+    df_list = pd.DataFrame(
+        columns=[
+            "Date",      # ex: 2025-10-22
+            "Time",      # ex: 00:00:03
+            "player",    # 選手名
+            "利き手",     # 右/左
+            "身長",       # cm
+            "体重",       # kg
+            "csv_path",  # ex: 20251022_000003_FP.csv
+        ]
     )
 
-    # === 反映ボタン ===
-    do_apply = st.button("💾 反映（playerlist.csv を更新）")
-    if do_apply:
-        try:
-            # 1) 現在の playerlist を Shift-JIS で読み込み
-            pl = pd.read_csv(PLAYERLIST_PATH, encoding="shift_jis")
+# -------------------------------------------------
+# data/ 内の *_FP.csv / *_fp.csv をスキャンし、未登録のものを df_list に追加
+# -------------------------------------------------
+fp_files = list(DATA_DIR.glob("*_FP.csv")) + list(DATA_DIR.glob("*_fp.csv"))
 
-            # 列名ゆれ解決（既存の _find_col をそのまま使う）
-            def _find_col(df, names):
-                cmap = {str(c).strip().lower(): c for c in df.columns}
-                for n in names:
-                    k = str(n).strip().lower()
-                    if k in cmap:
-                        return cmap[k]
-                return None
+existing_paths = set()
+if "csv_path" in df_list.columns:
+    existing_paths = set(df_list["csv_path"].astype(str).str.strip())
 
-            p_p  = _find_col(pl, ["player"]) or "player"
-            h_p  = _find_col(pl, ["利き手", "handedness", "dominant"]) or "利き手"
-            ht_p = _find_col(pl, ["身長", "height", "height_cm"])       or "身長"
-            wt_p = _find_col(pl, ["体重", "weight", "weight_kg"])       or "体重"
+new_rows = []
+for p in fp_files:
+    name_only = p.name  # ex: 20251022_000003_FP.csv
 
-            # 足りない列は作っておく（既存カラムは保持）
-            for c in [p_p, h_p, ht_p, wt_p]:
-                if c not in pl.columns:
-                    pl[c] = ""
+    if name_only in existing_paths:
+        continue
 
-            # 2) 編集結果を player キーで upsert（存在すれば更新、無ければ追加）
-            #    キーは大小無視・前後空白無視で照合
-            key_series = pl[p_p].astype(str).str.strip()
-            key_lcase = key_series.str.lower()
+    # ファイル名から Date / Time を推測（YYYYMMDD_HHMMSS_FP.csv）
+    m = re.match(r"(\d{8})_(\d{6})_?FP\.csv$", name_only, flags=re.IGNORECASE)
+    if m:
+        ymd = m.group(1)  # "20251022"
+        hms = m.group(2)  # "000003"
+        date_str = f"{ymd[0:4]}-{ymd[4:6]}-{ymd[6:8]}"  # "2025-10-22"
+        time_str = f"{hms[0:2]}:{hms[2:4]}:{hms[4:6]}"  # "00:00:03"
+    else:
+        date_str = ""
+        time_str = ""
 
-            updates = 0
-            inserts = 0
-            for _, r in editable.iterrows():
-                player = str(r["player"]).strip()
-                if not player:
-                    continue
-                handed = str(r["利き手"]).strip() if pd.notna(r["利き手"]) else ""
-                height = r["身長"]
-                weight = r["体重"]
+    new_rows.append({
+        "Date":     date_str,
+        "Time":     time_str,
+        "player":   "",
+        "利き手":     "",
+        "身長":       "",
+        "体重":       "",
+        "csv_path": name_only,
+    })
 
-                # 既存行の位置（大小無視）
-                match = key_lcase == player.lower()
-                if match.any():
-                    idx = match.idxmax()  # 最初の一致
-                    # 入力が空でなければ更新（空はスキップ）
-                    if handed:
-                        pl.at[idx, h_p] = handed
-                    if pd.notna(height) and str(height) != "":
-                        pl.at[idx, ht_p] = height
-                    if pd.notna(weight) and str(weight) != "":
-                        pl.at[idx, wt_p] = weight
-                    updates += 1
-                else:
-                    # 新規行を追加
-                    row_new = {col: "" for col in pl.columns}
-                    row_new[p_p]  = player
-                    row_new[h_p]  = handed
-                    row_new[ht_p] = height if pd.notna(height) and str(height) != "" else ""
-                    row_new[wt_p] = weight if pd.notna(weight) and str(weight) != "" else ""
-                    pl = pd.concat([pl, pd.DataFrame([row_new])], ignore_index=True)
-                    inserts += 1
+if new_rows:
+    df_list = pd.concat([df_list, pd.DataFrame(new_rows)], ignore_index=True)
 
-            # 3) Shift-JIS で上書き保存（バックアップが必要ならここで .bak を作成）
-            #    例: PLAYERLIST_PATH.with_suffix(".bak.csv") に pl.to_csv(..., index=False)
-            pl.to_csv(PLAYERLIST_PATH, index=False, encoding="shift_jis")
+# ユニーク保証
+if "csv_path" not in df_list.columns:
+    df_list["csv_path"] = ""
+df_list = df_list.drop_duplicates(subset=["csv_path"]).reset_index(drop=True)
 
-            # 4) 画面の df_base も即時反映したいので再マージ or rerun
-            st.success(f"playerlist.csv を更新しました（更新 {updates} 件 / 追加 {inserts} 件）。")
-            st.rerun()
+# -------------------------------------------------
+# 日付フィルタ用のdatetimeを作る（NaTはのちほどFalse扱いにする）
+# -------------------------------------------------
+dt_series = pd.to_datetime(
+    df_list["Date"].astype(str).str.strip() + " " + df_list["Time"].astype(str).str.strip(),
+    errors="coerce"
+)
 
-        except FileNotFoundError:
-            st.error(f"playerlist.csv が見つかりません: {PLAYERLIST_PATH}")
-        except Exception as e:
-            st.error(f"反映に失敗しました: {e}")
+valid_dt = dt_series.dropna()
+if len(valid_dt) > 0:
+    min_d = valid_dt.dt.date.min()
+    max_d = valid_dt.dt.date.max()
+else:
+    today = date.today()
+    min_d = today
+    max_d = today
 
-with st.expander("🔧 プレイヤー情報の修正（上書き）", expanded=False):
-    try:
-        # Shift-JIS で読込（型の揺れを避けるなら dtype=str）
-        pl = pd.read_csv(PLAYERLIST_PATH, encoding="shift_jis")
+# -------------------------------------------------
+# レイアウト全体を左右2カラムに
+# 左: フィルタ＋表＋遷移
+# 右: プレビュー＋1件保存
+# -------------------------------------------------
+left_col, right_col = st.columns([2, 1], vertical_alignment="top")
 
-        # ローカルな列名解決（大小文字・日本語にゆるく対応）
-        def _find_col_local(df, names):
-            cmap = {str(c).strip().lower(): c for c in df.columns}
-            for n in names:
-                k = str(n).strip().lower()
-                if k in cmap:
-                    return cmap[k]
-            return None
+# =================================================
+# 左カラム
+# =================================================
+with left_col:
+    # フィルタUIを表の上に
+    raw_value = st.date_input(
+        "Date 範囲を選択",
+        value=(min_d, max_d),
+        min_value=min_d,
+        max_value=max_d,
+        format="YYYY-MM-DD",
+        key="date_range"
+    )
 
-        pcol = _find_col_local(pl, ["player"])
-        hcol = _find_col_local(pl, ["利き手", "handedness", "dominant"])
-        htcol = _find_col_local(pl, ["身長", "height", "height_cm"])
-        wtcol = _find_col_local(pl, ["体重", "weight", "weight_kg"])
-
-        if pcol is None:
-            st.info("playerlist.csv に player 列がありません。先に列を追加してください。")
+    # date_inputの戻りを正規化
+    if isinstance(raw_value, tuple):
+        if len(raw_value) == 2:
+            start_date, end_date = raw_value
+        elif len(raw_value) == 1:
+            start_date = end_date = raw_value[0]
         else:
-            players = (
-                pl[pcol].astype(str).fillna("")
-                .apply(lambda s: s.strip())
-                .replace({"None": ""})
-                .tolist()
-            )
-            players = sorted(set([p for p in players if p]))  # 空と重複を除去
+            start_date, end_date = min_d, max_d
+    else:
+        start_date = end_date = raw_value
 
-            with st.form("overwrite_player_form"):
-                target = st.selectbox("上書きする player を選択", players, index=0 if players else None)
-                # 現在値を取得（大文字小文字無視で一意マッチ）
-                handed_val = height_val = weight_val = ""
-                if target:
-                    m = pl[pcol].astype(str).str.strip().str.lower() == target.strip().lower()
-                    if m.any():
-                        row0 = pl.loc[m].iloc[0]
-                        handed_val = str(row0.get(hcol, "")) if hcol else ""
-                        height_val = str(row0.get(htcol, "")) if htcol else ""
-                        weight_val = str(row0.get(wtcol, "")) if wtcol else ""
+    if start_date is None and end_date is None:
+        start_date, end_date = min_d, max_d
+    elif start_date is None:
+        start_date = end_date
+    elif end_date is None:
+        end_date = start_date
 
-                col1, col2, col3 = st.columns(3)
-                new_handed = col1.text_input("利き手（空欄は変更しない）", value=handed_val)
-                new_height = col2.text_input("身長 cm（空欄は変更しない）", value=height_val)
-                new_weight = col3.text_input("体重 kg（空欄は変更しない）", value=weight_val)
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
 
-                submitted = st.form_submit_button("📝 上書き保存")
-                if submitted and target:
-                    # 既存列が無ければ作成（保守的）
-                    if hcol is None:
-                        hcol = "利き手"; pl[hcol] = ""
-                    if htcol is None:
-                        htcol = "身長";   pl[htcol] = ""
-                    if wtcol is None:
-                        wtcol = "体重";   pl[wtcol] = ""
+    # NaT行は除外、範囲に入った行だけマスク
+    mask_valid = dt_series.notna()
+    date_only = dt_series.dt.date
+    mask_range = (date_only >= start_date) & (date_only <= end_date)
+    mask = mask_valid & mask_range
 
-                    m = pl[pcol].astype(str).str.strip().str.lower() == target.strip().lower()
-                    if not m.any():
-                        st.error("対象の player が見つかりませんでした。")
-                    else:
-                        idxs = pl.index[m]
-                        # 空欄は変更しない
-                        if str(new_handed).strip() != "":
-                            pl.loc[idxs, hcol] = str(new_handed).strip()
-                        if str(new_height).strip() != "":
-                            pl.loc[idxs, htcol] = str(new_height).strip()
-                        if str(new_weight).strip() != "":
-                            pl.loc[idxs, wtcol] = str(new_weight).strip()
+    df_filtered = df_list.loc[mask].copy().reset_index(drop=True)
 
-                        # Shift-JIS で保存
-                        pl.to_csv(PLAYERLIST_PATH, index=False, encoding="shift_jis")
-                        st.success(f"{target} の情報を上書きしました。")
-                        st.rerun()
+    st.subheader("計測データ一覧")
 
-    except FileNotFoundError:
-        st.info(f"playerlist.csv が見つかりません: {PLAYERLIST_PATH}")
-    except Exception as e:
-        st.error(f"上書き処理に失敗しました: {e}")
+    SELECT_COL = "選択"
+    if SELECT_COL not in df_filtered.columns:
+        df_filtered.insert(0, SELECT_COL, False)
 
+    edited = st.data_editor(
+        df_filtered,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            SELECT_COL: st.column_config.CheckboxColumn(
+                required=False,
+                help="レポートやグラフ表示に使いたい行をチェック",
+            ),
+            "player": st.column_config.TextColumn(
+                "選手名",
+                help="動画を見て確定させてください（unknownの場合は修正）",
+            ),
+            "利き手": st.column_config.TextColumn(
+                "利き手",
+                help="右 / 左 など",
+            ),
+            "身長": st.column_config.NumberColumn(
+                "身長[cm]",
+                help="身長(cm)",
+            ),
+            "体重": st.column_config.NumberColumn(
+                "体重[kg]",
+                help="体重(kg)",
+            ),
+            "csv_path": st.column_config.TextColumn(
+                "計測CSVファイル",
+                disabled=True,
+                help="data/ 内の元CSVファイル名",
+            ),
+        },
+        disabled=False,
+        height=520,
+        key="datalist_editor",
+    )
 
-sel_mask = edited[SELECT_COL] == True
-selected_rows = edited[sel_mask].drop(columns=[SELECT_COL], errors="ignore")
+    st.markdown("---")
 
-st.session_state["selected_records"] = _records_from_selected(selected_rows, csv_col)
-st.session_state["selected_csv_paths"] = [r["csv_path"] for r in st.session_state["selected_records"]]
+    # 次の画面へ（GraphViewer / Report）
+    st.subheader("次の画面へ")
+    go_graph = st.button("📈 グラフビュワーへ")
+    go_report = st.button("📝 レポートを開く")
 
+    if go_graph or go_report:
+        sel_mask = edited[SELECT_COL] == True
+        selected_rows = edited[sel_mask].drop(columns=[SELECT_COL], errors="ignore")
 
-def _prepare_records(selected_rows):
-    records = []
-    for _, r in selected_rows.iterrows():
-        row_dict = r.to_dict()
-        csv_value = str(row_dict.get(csv_col, "")).strip()
-        csv_path = Path(csv_value)
-        if not csv_path.is_absolute():
-            csv_path = (DATA_DIR / csv_path).resolve()
-        records.append({
-            "row": row_dict,
-            "csv_col": csv_col,
-            "csv_path": csv_path.as_posix(),
-            "data_dir": DATA_DIR.as_posix(),
-            "datalist_path": DATALIST_PATH.as_posix(),
-        })
-    return records
+        if selected_rows.empty:
+            st.warning("1行以上チェックしてください。")
+            st.stop()
 
-# 並列ボタン
-col_btns = st.columns([0.01, 3, 6])  # 左の余白, ボタン群, 右の余白
-with col_btns[1]:
-    bcol1, bcol2 = st.columns([1, 1])
-    with bcol1:
-        go_graph = st.button("📈 グラフビュワーへ", type="primary")
-    with bcol2:
-        go_report = st.button("📝 レポートを開く")
+        # records 構築
+        records = []
+        for _, r in selected_rows.iterrows():
+            row_dict = r.to_dict()
+            csv_val = str(row_dict.get("csv_path", "")).strip()
+            full_path = (DATA_DIR / csv_val).resolve()
+            records.append({
+                "row": row_dict,
+                "csv_path": full_path.as_posix(),
+                "data_dir": DATA_DIR.as_posix(),
+                "datalist_path": DATALIST_PATH.as_posix(),
+            })
 
-# ↓ 以降は同じ処理
-if go_graph or go_report:
-    if selected_rows.empty:
-        st.warning("1行以上選択してください。")
-        st.stop()
+        st.session_state["selected_records"] = records
+        st.session_state["selected_csv_paths"] = {
+            f"{i+1}. {Path(rec['csv_path']).name}": rec["csv_path"]
+            for i, rec in enumerate(records)
+        }
 
-    records = _prepare_records(selected_rows)
-    st.session_state["selected_records"] = records
-    st.session_state["selected_csv_paths"] = {
-        f"{i+1}. {Path(rec['csv_path']).name}": rec["csv_path"]
-        for i, rec in enumerate(records)
-    }
+        dest = "pages/GraphViewer.py" if go_graph else "pages/Report.py"
+        st.switch_page(dest)
 
-    dest = "pages/GraphViewer.py" if go_graph else "pages/Report.py"
-    st.switch_page(dest)
+# =================================================
+# 右カラム
+# =================================================
+with right_col:
+    st.subheader("選手情報記入欄")
 
+    if 'df_filtered' not in locals() or len(df_filtered) == 0:
+        st.info("この期間内に該当データがありません。")
+    else:
+        # プレビュー対象を選択（今フィルタで表示中のものだけ対象）
+        preview_key = st.selectbox(
+            "編集するデータ",
+            df_filtered["csv_path"].tolist(),
+        )
+
+        # 対応行を df_list から取得（フィルタ前の元データを信頼する）
+        row_current = df_list.loc[df_list["csv_path"] == preview_key].copy()
+        if len(row_current) > 0:
+            row_current = row_current.iloc[0]
+        else:
+            row_current = pd.Series({
+                "player": "",
+                "利き手": "",
+                "身長": "",
+                "体重": "",
+            })
+
+        # 対応動画推定: 例 "xxx_FP.csv" -> "xxx_FP.mp4"
+        mp4_path = DATA_DIR / (Path(preview_key).stem + ".mp4")
+        if mp4_path.exists():
+            st.video(str(mp4_path))
+        else:
+            st.info("対応する動画(.mp4)が見つかりませんでした。")
+
+        st.markdown("#### この計測の情報を確定して保存")
+
+        with st.form("single_row_update"):
+            new_player = st.text_input("選手名", row_current.get("player", ""))
+            new_handed = st.text_input("利き手(右/左)", row_current.get("利き手", ""))
+            col_h, col_w = st.columns(2)
+            new_height = col_h.text_input("身長[cm]", str(row_current.get("身長", "")))
+            new_weight = col_w.text_input("体重[kg]", str(row_current.get("体重", "")))
+
+            apply_single = st.form_submit_button("保存")
+
+        if apply_single:
+            # df_list 内の該当行だけ更新
+            idx_match = df_list["csv_path"] == preview_key
+            df_list.loc[idx_match, "player"] = new_player
+            df_list.loc[idx_match, "利き手"] = new_handed
+            df_list.loc[idx_match, "身長"] = new_height
+            df_list.loc[idx_match, "体重"] = new_weight
+
+            # datalist.csv を即上書き
+            df_list.to_csv(DATALIST_PATH, index=False, encoding="utf-8-sig")
+            st.success(f"{preview_key} の情報を更新して保存しました。")
+            st.rerun()
