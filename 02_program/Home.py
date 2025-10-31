@@ -13,7 +13,7 @@ USERLIST_PATH = DATA_DIR / "userlist.csv"
 
 SELECT_COL = "_select_"
 TS_COL = "_ts"
-DISPLAY_COLS = ["csv_path", "Date", "Time", "user", "利き手", "身長", "体重"]
+DISPLAY_COLS = ["csv_path", "Date", "Time", "user", "利き手", "身長", "体重", "備考"]
 
 
 # -----------------
@@ -48,14 +48,14 @@ def list_fp_files(data_dir: Path) -> pd.DataFrame:
 def load_datalist(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(
-            columns=["csv_path", "Date", "Time", "user", "利き手", "身長", "体重"]
+            columns=["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]
         )
 
     df = pd.read_csv(path)
-    for col in ["csv_path", "Date", "Time", "user", "利き手", "身長", "体重"]:
+    for col in ["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]:
         if col not in df.columns:
             df[col] = ""
-    return df[["csv_path", "Date", "Time", "user", "利き手", "身長", "体重"]].copy()
+    return df[["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]].copy()
 
 
 def load_userlist(path: Path) -> pd.DataFrame:
@@ -78,15 +78,15 @@ def build_df_all() -> pd.DataFrame:
     data/*.csv と datalist.csv と userlist.csv を統合して返す。
     常に csv_path は1行に潰して返す。
     """
-    base_df = list_fp_files(DATA_DIR)        # csv_path, Date, Time
-    dl_df   = load_datalist(DATALIST_PATH)   # csv_path, Date, Time, user, 利き手, 身長, 体重
-    pl_df   = load_userlist(USERLIST_PATH)  # user, 利き手, 身長, 体重
-
+    base_df = list_fp_files(DATA_DIR)
+    dl_df   = load_datalist(DATALIST_PATH)
+    pl_df   = load_userlist(USERLIST_PATH)
+    
     # datalist は csv_path ごとに1行だけ残す
     dl_df_unique = (
         dl_df.sort_values(["csv_path", "Date", "Time"])
              .drop_duplicates(subset=["csv_path"], keep="last")
-    )[["csv_path", "user"]].copy()
+    )[["csv_path", "user", "備考"]].copy()
 
     # userlist も user ごとに1行だけ残す
     pl_df_unique = (
@@ -111,13 +111,14 @@ def build_df_all() -> pd.DataFrame:
     )
 
     # 欠損補完
-    for col in ["user", "利き手", "身長", "体重"]:
+    for col in ["user", "利き手", "身長", "体重", "備考"]:
         if col not in merged.columns:
             merged[col] = ""
     merged["user"] = merged["user"].fillna("")
     merged["利き手"] = merged["利き手"].fillna("")
     merged["身長"] = merged["身長"].fillna("")
     merged["体重"] = merged["体重"].fillna("")
+    merged["備考"] = merged["備考"].fillna("") 
 
     # タイムスタンプ列（フィルタ用）
     def to_ts(row):
@@ -218,7 +219,7 @@ def rebuild_and_save_datalist(df_all_current: pd.DataFrame):
     df_all_current から datalist.csv を作り直して保存。
     """
     # df_all_current: csv_path, Date, Time, user, ...
-    out = df_all_current[["csv_path", "Date", "Time", "user", "利き手", "身長", "体重"]].copy()
+    out = df_all_current[["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]].copy()
 
     # 念のためユニーク化
     out = (
@@ -233,7 +234,8 @@ def assign_user_and_save_all(target_csv: str,
                                user: str,
                                handed: str,
                                height: str,
-                               weight: str):
+                               weight: str,
+                               remarks: str = ""):
     """
     右カラム保存ボタン用。
     - userlist.csv を更新
@@ -260,6 +262,9 @@ def assign_user_and_save_all(target_csv: str,
     df_all_current.loc[
         df_all_current["csv_path"] == target_csv, "体重"
     ] = weight
+    if "備考" not in df_all_current.columns:
+        df_all_current["備考"] = ""
+    df_all_current.loc[df_all_current["csv_path"] == target_csv, "備考"] = remarks
 
     # 4. datalist.csv を再生成
     rebuild_and_save_datalist(df_all_current)
@@ -321,19 +326,17 @@ with left_col:
         "利き手":    st.column_config.TextColumn("利き手",    disabled=True),
         "身長":     st.column_config.TextColumn("身長",     disabled=True),
         "体重":     st.column_config.TextColumn("体重",     disabled=True),
+        "備考":     st.column_config.TextColumn("備考",     disabled=True),
     }
 
-    # 編集不可にしたいが、チェックボックスは使いたいなら:
-    # -> user/利き手/身長/体重 も disabled=True、CheckboxColumn はそのまま
-    # data_editorは返り値を受け取れるので後で解析起動に使える
+    view_cols = [SELECT_COL] + [c for c in DISPLAY_COLS] 
     edited = st.data_editor(
-        df_for_view,
+        df_for_view[view_cols],
         hide_index=True,
         key="datalist_editor",
         column_config=column_cfg,
     )
 
-    # datalist.csvの更新UIはもう置かない（削除済み）
 
     # 解析ビュー起動
     st.markdown("#### 解析ビュー起動")
@@ -410,10 +413,11 @@ with right_col:
         current_handed_val = str(row_now["利き手"].iloc[0]) if not row_now.empty and pd.notna(row_now["利き手"].iloc[0]) else ""
         current_height_val = str(row_now["身長"].iloc[0]) if not row_now.empty and pd.notna(row_now["身長"].iloc[0]) else ""
         current_weight_val = str(row_now["体重"].iloc[0]) if not row_now.empty and pd.notna(row_now["体重"].iloc[0]) else ""
+        current_remarks_val = str(row_now["備考"].iloc[0]) if not row_now.empty and pd.notna(row_now["備考"].iloc[0]) else ""
 
         # ==== 2. セッション初期化 ====
         for key in [
-            "edit_user", "edit_handed", "edit_height", "edit_weight",
+            "edit_user", "edit_handed", "edit_height", "edit_weight", "edit_remarks",
             "bound_csv",
             "pending_confirm",          # ← 確認待ちフラグ
             "pending_target_csv",       # ← 確認対象のcsv
@@ -428,6 +432,7 @@ with right_col:
             st.session_state["edit_handed"] = current_handed_val
             st.session_state["edit_height"] = current_height_val
             st.session_state["edit_weight"] = current_weight_val
+            st.session_state["edit_remarks"] = current_remarks_val
             st.session_state["bound_csv"] = target_csv
             st.session_state["pending_confirm"] = False
             st.session_state["pending_target_csv"] = ""
@@ -507,6 +512,12 @@ with right_col:
                 st.text_input("身長", key="edit_height")
             with tile_cols[3]:
                 st.text_input("体重", key="edit_weight")
+            st.text_area(
+                "備考",
+                key="edit_remarks",
+                height=90,
+                help="自由記述メモ（datalist.csv の備考列に保存されます）",
+            )
 
         # ==== 5. 保存ボタン or 上書き確認 ====
 
@@ -515,6 +526,7 @@ with right_col:
         form_handed = (st.session_state["edit_handed"] or "").strip()
         form_height = (st.session_state["edit_height"] or "").strip()
         form_weight = (st.session_state["edit_weight"] or "").strip()
+        form_remarks = (st.session_state["edit_remarks"] or "").strip()
 
         # userlist 上の既存プロファイルを取得
         def _norm(x): 
@@ -555,6 +567,7 @@ with right_col:
                         "handed": form_handed,
                         "height": form_height,
                         "weight": form_weight,
+                        "remarks": form_remarks,
                     }
                 else:
                     # 新規 or 既存だが値は同一 → そのまま保存
@@ -564,6 +577,7 @@ with right_col:
                         handed=form_handed,
                         height=form_height,
                         weight=form_weight,
+                        remarks=form_remarks,
                     )
                     st.success("保存しました。")
                     st.rerun()
@@ -597,6 +611,7 @@ with right_col:
                         handed=pld["handed"],
                         height=pld["height"],
                         weight=pld["weight"],
+                        remarks=pld.get("remarks", ""),
                     )
                     st.session_state["pending_confirm"] = False
                     st.session_state["pending_target_csv"] = ""
