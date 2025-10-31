@@ -10,6 +10,38 @@ import time
 # ユーティリティ
 # -------------------------------------------------
 
+def get_user_meta_for_csv(csv_path: Path):
+    """
+    datalist.csv から user を拾い、userlist.csv から利き手/身長/体重を取得。
+    戻り値: dict(user, handedness, height_cm, weight_kg)
+    """
+    dl = load_datalist(DATALIST_PATH)
+    pl = load_userlist(USERLIST_PATH)
+
+    user = ""
+    handed = ""
+    height = ""
+    weight = ""
+
+    # datalist から user を解決
+    row = dl[dl["csv_path"].astype(str) == csv_path.name]
+    if not row.empty:
+        user = str(row["user"].iloc[0] or "").strip()
+
+    if user:
+        prow = pl[pl["user"].astype(str).str.strip() == user]
+        if not prow.empty:
+            handed = str(prow["利き手"].iloc[0] or "").strip()
+            height = str(prow["身長"].iloc[0] or "").strip()
+            weight = str(prow["体重"].iloc[0] or "").strip()
+
+    return {
+        "user": user,
+        "handedness": handed,
+        "height_cm": height,
+        "weight_kg": weight,
+    }
+
 def read_csv_any_encoding(p: Path) -> pd.DataFrame:
     """
     cp932とかutf-8-sigとか想定して順に試す。
@@ -83,12 +115,12 @@ def load_video_info(video_path: Path):
 def build_report_summary(df: pd.DataFrame, csv_path: Path):
     """
     Reportタブ向けの簡易サマリ例。
-    本来はあなたのReport.pyのロジック（計測日時、player名、所要時間とか）を入れる。
+    本来はあなたのReport.pyのロジック（計測日時、user名、所要時間とか）を入れる。
     ここでは最低限の形を書いておく。
     """
-    # player列っぽいものを探す
-    cand_player_cols = [c for c in df.columns if c.lower() in ["player", "name", "athlete"]]
-    player_name = df[cand_player_cols[0]].iloc[0] if cand_player_cols else "(不明)"
+    # user列っぽいものを探す
+    cand_user_cols = [c for c in df.columns if c.lower() in ["user", "name", "athlete"]]
+    user_name = df[cand_user_cols[0]].iloc[0] if cand_user_cols else "(不明)"
 
     # 計測日時っぽいもの
     cand_date_cols = [c for c in df.columns if "date" in c.lower() or "time" in c.lower()]
@@ -99,18 +131,54 @@ def build_report_summary(df: pd.DataFrame, csv_path: Path):
 
     info = {
         "ファイル": csv_path.name,
-        "選手": str(player_name),
+        "選手": str(user_name),
         "計測日時らしき値": measure_info,
         "サンプル数": len(df),
     }
     return info
+
+def detect_time_and_numeric_cols(df: pd.DataFrame):
+    # time候補
+    time_col = None
+    for cand in df.columns:
+        if str(cand).lower() in ["time", "t", "timestamp", "sec", "seconds"]:
+            time_col = cand; break
+
+    # 数値列
+    numeric_cols = []
+    for c in df.columns:
+        if c == time_col: 
+            continue
+        try:
+            pd.to_numeric(df[c].dropna().head(10), errors="raise")
+            numeric_cols.append(c)
+        except Exception:
+            pass
+    return time_col, numeric_cols
+
+def get_graph_range(prefix: str):
+    s = st.session_state.get(prefix + "start_idx")
+    e = st.session_state.get(prefix + "end_idx")
+    if s is None or e is None:
+        return None
+    s = int(s); e = int(e)
+    if e < s: e = s
+    return s, e
+
+def slice_by_range(df: pd.DataFrame, idx_range):
+    if not idx_range:
+        return df, None
+    s, e = idx_range
+    s = max(0, min(s, len(df)-1))
+    e = max(0, min(e, len(df)-1))
+    return df.iloc[s:e+1].copy(), (s, e)
 
 
 # -------------------------------------------------
 # ページ基本設定
 # -------------------------------------------------
 
-st.set_page_config(page_title="Player View", layout="wide")
+st.set_page_config(page_title="user View", layout="wide")
 
 # URLパラメータから csv_path と tab を取得
 params = st.query_params
@@ -119,9 +187,6 @@ initial_tab = params.get("tab", "graph")
 
 csv_path = Path(csv_path_param)
 
-st.title("Player View (8502)")
-st.caption("1つの計測データからグラフとレポートをタブで切り替えて確認")
-
 if not csv_path.exists():
     st.error(f"指定されたCSVが見つかりません: {csv_path}")
     st.stop()
@@ -129,17 +194,8 @@ if not csv_path.exists():
 # CSVロード
 df = read_csv_any_encoding(csv_path)
 
-# time列を推定
-time_col = None
-for cand in df.columns:
-    if cand.lower() in ["time", "t", "timestamp", "sec", "seconds"]:
-        time_col = cand
-        break
-
-if time_col is None:
-    # timeっぽい列がなかったらダミーでインデックスを時間にする(0,1,2,...)
-    df["_time_tmp_"] = np.arange(len(df)) * 0.01  # 仮に100Hz
-    time_col = "_time_tmp_"
+time_col, numeric_cols = detect_time_and_numeric_cols(df)
+value_cols = [c for c in df.columns if c != time_col]
 
 # 2軸で見たいので、time以外の数値列を列挙
 numeric_cols = []
@@ -157,7 +213,7 @@ for c in df.columns:
 video_path = csv_path.with_suffix(".mp4")
 video_info = load_video_info(video_path)
 
-# PlayerView 全体で共有する state prefix
+# userView 全体で共有する state prefix
 prefix = f"pv_{csv_path.name}_"
 
 # 初期state
@@ -180,14 +236,12 @@ with tab_graph:
     #
     # ====== GraphViewerタブ本体 ======
     #
-    st.subheader("グラフビュー / Graph")
 
     # Y軸候補（time_col以外の列）
     all_cols = list(df.columns)
-    value_cols = [c for c in all_cols if c != time_col]
 
     # UIレイアウト: 左(操作パネル) / 右(動画＋グラフ＋スライダー)
-    left_col, right_col = st.columns([0.4, 0.6])
+    left_col, right_col = st.columns([0.3, 0.7])
 
     # -------------------------------------------------
     # 左カラム：軸選択 / 再生・停止 / コマ送り / 区間指定
@@ -197,7 +251,7 @@ with tab_graph:
 
         # 1本目のY軸
         y1_col = st.selectbox(
-            "Y軸(1本目)",
+            "Y軸（第1軸）",
             value_cols,
             index=0 if value_cols else 0,
             key=prefix + "y1_col_select",
@@ -205,7 +259,7 @@ with tab_graph:
 
         # 2本目のY軸(任意)
         y2_col = st.selectbox(
-            "Y軸(2本目・任意)",
+            "Y軸(第2軸)",
             ["(なし)"] + value_cols,
             index=0,
             key=prefix + "y2_col_select",
@@ -359,6 +413,36 @@ with tab_graph:
         # CSV時間に最も近い動画フレーム番号
         frame_idx = int(np.argmin(np.abs(video_times - t_marker)))
 
+        # === レンジ計算（固定用） ===
+        def _safe_minmax(arr):
+            arr = np.asarray(arr)
+            if arr.size == 0:
+                return -1.0, 1.0
+            vmin = float(np.nanmin(arr))
+            vmax = float(np.nanmax(arr))
+            if not np.isfinite(vmin) or not np.isfinite(vmax):
+                vmin, vmax = -1.0, 1.0
+            if abs(vmax - vmin) < 1e-12:
+                vmin -= 0.5
+                vmax += 0.5
+            pad = 0.05 * (vmax - vmin)
+            return vmin - pad, vmax + pad
+
+        # xは全時間で固定
+        x0, x1 = float(x_vals[0]), float(x_vals[-1])
+
+        # y1固定レンジ
+        y1_min, y1_max = _safe_minmax(y1_vals)
+
+        # y2固定レンジ（使う場合）
+        if y2_active and y2_vals is not None:
+            y2_min, y2_max = _safe_minmax(y2_vals)
+            y_all_min = min(y1_min, y2_min)
+            y_all_max = max(y1_max, y2_max)
+        else:
+            y2_min = y2_max = None
+            y_all_min, y_all_max = y1_min, y1_max
+
         # === グラフ作成 ===
         fig = go.Figure()
 
@@ -387,15 +471,7 @@ with tab_graph:
                 )
             )
 
-        # 縦線の高さ範囲
-        if y2_active and y2_vals is not None:
-            y_all_min = min(np.nanmin(y1_vals), np.nanmin(y2_vals))
-            y_all_max = max(np.nanmax(y1_vals), np.nanmax(y2_vals))
-        else:
-            y_all_min = np.nanmin(y1_vals)
-            y_all_max = np.nanmax(y1_vals)
-
-        # 現在位置の赤縦線
+        # 現在位置の赤縦線（固定レンジに合わせる）
         fig.add_shape(
             type="line",
             x0=t_marker,
@@ -420,8 +496,14 @@ with tab_graph:
                 opacity=0.3,
                 line_width=0,
             )
+            # レポート用：選択された時刻範囲を保存
+            st.session_state["report_range"] = {"t0": float(t0), "t1": float(t1)}
+        else:
+            # 選択が外れたら未設定に戻す
+            st.session_state["report_range"] = None
 
-        # レイアウト（右軸あり/なし両対応）
+
+        # レイアウト（固定レンジを明示）
         layout_dict = dict(
             height=240,
             margin=dict(l=40, r=40, t=20, b=30),
@@ -436,10 +518,15 @@ with tab_graph:
             ),
             xaxis=dict(
                 title="Time [s]",
+                range=[x0, x1],     # ★ 固定
+                autorange=False,    # ★ オート禁止
                 fixedrange=True,
+                zeroline=False,
             ),
             yaxis=dict(
                 title=y1_col,
+                range=[y1_min, y1_max],  # ★ 固定
+                autorange=False,         # ★ オート禁止
                 fixedrange=True,
                 zeroline=False,
             ),
@@ -450,6 +537,8 @@ with tab_graph:
                 title=y2_col,
                 overlaying="y",
                 side="right",
+                range=[y2_min, y2_max],  # ★ 固定
+                autorange=False,         # ★ オート禁止
                 fixedrange=True,
                 zeroline=False,
             )
@@ -474,6 +563,7 @@ with tab_graph:
             )
         else:
             frame_slot.error("フレームを取得できませんでした。")
+
 
     # -------------------------------------------------
     # 再生ループ / 静止表示
@@ -503,123 +593,165 @@ with tab_graph:
 # タブ2: レポート
 # -------------------------------------------------
 with tab_report:
-    #
-    # ====== Reportタブ本体 ======
-    #
     from report_core import (
         load_csv_from_path,
         build_report_html_from_df,
         render_report_with_print_toolbar,
     )
+    from Home import DATALIST_PATH, USERLIST_PATH, load_datalist, load_userlist
+
+    # --- ヘルパ ----------------------------
+    def get_graph_range(prefix: str):
+        """Graphタブで保存した start/end を読み出す。"""
+        s = st.session_state.get(prefix + "start_idx")
+        e = st.session_state.get(prefix + "end_idx")
+        if s is None or e is None:
+            return None
+        s, e = int(s), int(e)
+        if e < s:
+            e = s
+        return s, e
+
+    def slice_by_range(df: pd.DataFrame, idx_range):
+        """idx_range=(s,e) を df.iloc で安全にスライス。"""
+        if not idx_range:
+            return df, None
+        s, e = idx_range
+        s = max(0, min(s, len(df) - 1))
+        e = max(0, min(e, len(df) - 1))
+        return df.iloc[s:e + 1].copy(), (s, e)
+
+    def pick_user_from_df(df: pd.DataFrame) -> str:
+        """CSV内の 'user' 列から最初の非空値を拾う。なければ空文字。"""
+        for c in df.columns:
+            if str(c).strip().lower() == "user":
+                try:
+                    s = df[c].astype(str).str.strip()
+                    vals = [v for v in s.unique().tolist() if v]
+                    return vals[0] if vals else ""
+                except Exception:
+                    pass
+        return ""
+
+    def resolve_user_meta(csv_path: Path, df_full: pd.DataFrame):
+        """
+        表示名: CSVのuser列 → datalist.csvのuser の優先順で決定。
+        handedness/height/weight は userlist.csv から。
+        """
+        # 1) CSVのuser
+        user_in_csv = pick_user_from_df(df_full)
+
+        # 2) datalist.csv から user を解決
+        dl = load_datalist(DATALIST_PATH)
+        user_from_dl = ""
+        if "csv_path" in dl.columns:
+            row = dl[dl["csv_path"].astype(str) == csv_path.name]
+            if not row.empty:
+                user_from_dl = str(row["user"].iloc[0] or "").strip()
+
+        # 3) userlist.csv からプロフィール
+        handedness = height_cm = weight_kg = ""
+        if user_from_dl:
+            pl = load_userlist(USERLIST_PATH)
+            if not pl.empty and "user" in pl.columns:
+                prow = pl[pl["user"].astype(str).str.strip() == user_from_dl]
+                if not prow.empty:
+                    handedness = str(prow.get("利き手", [""]).iloc[0] or "").strip()
+                    height_cm  = str(prow.get("身長",  [""]).iloc[0] or "").strip()
+                    weight_kg  = str(prow.get("体重",  [""]).iloc[0] or "").strip()
+
+        # 表示名の優先度
+        resolved_name = user_in_csv or user_from_dl or ""
+        return resolved_name, handedness, height_cm, weight_kg
+    # --------------------------------------------------------------------
 
     st.subheader("レポートビュー / Report")
-    
     if "logs" not in st.session_state:
         st.session_state["logs"] = []
 
-    # 1. CSVの読み込みとメタ情報取り出し（Report.pyと同じやり方）:contentReference[oaicite:3]{index=3}
+    # 1) CSV読込
     try:
         df_full, measured_at, date_str, time_str, duration_str = load_csv_from_path(csv_path)
     except Exception as e:
         st.error(f"CSV の読み込みに失敗しました: {csv_path}\n{e}")
         st.stop()
 
-    # 2. グラフタブでユーザーが指定した区間の適用
-    #    PlayerViewでは prefix+"start_idx"/"end_idx" に区間が入ってる想定。
-    #    Report.pyでは graph_ranges[label]['start'/'end'] を参照してたので、
-    #    それに相当するものをここで作る。
-    start_idx = st.session_state.get(prefix + "start_idx", None)
-    end_idx   = st.session_state.get(prefix + "end_idx", None)
-
-    if start_idx is not None and end_idx is not None:
-        s_idx = int(start_idx)
-        e_idx = int(end_idx)
-        # 安全なクリップ
-        s_idx = max(0, min(s_idx, len(df_full) - 1))
-        e_idx = max(0, min(e_idx, len(df_full) - 1))
-        if e_idx < s_idx:
-            e_idx = s_idx
-        df_for_report = df_full.iloc[s_idx:e_idx + 1].copy()
-        st.caption(f"このレポートは区間 [{s_idx}, {e_idx}] のデータで作成しています。")
-    else:
-        df_for_report = df_full
+    # 2) Graphタブの区間を適用（start/end を反映）
+    idx_range = get_graph_range(prefix)
+    df_for_report, used_range = slice_by_range(df_full, idx_range)
+    if used_range is None:
         st.caption("このレポートはCSV全範囲のデータで作成しています。")
+    else:
+        st.caption(f"このレポートは区間 [{used_range[0]}, {used_range[1]}] のデータで作成しています。")
 
-    # 3. player_name 推定
-    #    Report.pyでは _first_nonempty_player() でCSVからplayer列を拾っていた。:contentReference[oaicite:4]{index=4}
-    def _first_nonempty_player_local(dfcandidate) -> str | None:
-        cand_col = None
-        for c in dfcandidate.columns:
-            if str(c).strip().lower() == "player":
-                cand_col = c
-                break
-        if not cand_col:
-            return None
-        try:
-            s = dfcandidate[cand_col].astype(str).map(lambda x: x.strip())
-            vals = [v for v in s.unique().tolist() if v]
-            return vals[0] if vals else None
-        except Exception:
-            return None
+    # 3) ユーザーメタを解決（CSV→datalist→userlist）
+    user_name, handedness, height_cm, weight_kg = resolve_user_meta(csv_path, df_full)
 
-    player_name = _first_nonempty_player_local(df_full) or ""
-
-    # 4. basic_meta / file_meta をReport.pyと同じ形で用意する
-    #    Report.pyでは row_meta (Homeで保持した行メタ) を混ぜていたけど、
-    #    PlayerViewは Home側のrow_metaを持ってこないので、最低限埋められるところだけ埋める。
-    basic_meta = {
-        "filename": csv_path.name,
-        "measured_at": measured_at,
-        "date": date_str,
-        "time": time_str,
+    # 4) レポート用メタを組み立て
+    report_meta = {
+        "filename":     csv_path.name,
+        "measured_at":  measured_at,
+        "date":         date_str,
+        "time":         time_str,
         "duration_sec": duration_str,
-        "player_name": player_name,
-        # handedness, height_cm, weight_kg... は本来 row_meta から来てた。
-        # いまのPlayerView側では持ってないので空で埋める。
-        "handedness": "",
-        "height_cm": "",
-        "weight_kg": "",
-        "foot_size_cm": "",
-        "step_width_cm": "",
+        "user_name":  user_name,
+        "handedness":   handedness,
+        "height_cm":    height_cm,
+        "weight_kg":    weight_kg,
+        # 必要なら任意項目も
+        # "foot_size_cm": "", "step_width_cm": "",
     }
+    
+    # 5) 開始時刻サムネ（start_img_uri）を作る
+    import io, base64
+    from PIL import Image
 
-    file_meta = {
-        "filename": csv_path.name,
-        "date": date_str,
-        "time": time_str,
-        "duration_sec": duration_str,
-        "player_name": player_name,
-        "title": player_name,
-        "name": player_name,
-    }
+    start_idx = (used_range[0] if used_range is not None else 0)
 
-    # 5. レポートHTML本体を生成（report_core.build_report_html_from_df）:contentReference[oaicite:5]{index=5}
+    if time_col is not None and time_col in df_full.columns and len(df_full) > 0:
+        t_start_sec = float(to_seconds_any(df_full[time_col].iloc[start_idx]))
+    else:
+        # Time 列がない場合のフォールバック（fps から換算）
+        vi_tmp = load_video_info(csv_path.with_suffix(".mp4"))
+        fps_tmp = vi_tmp["fps"] if vi_tmp else 30.0
+        t_start_sec = float(start_idx) / float(fps_tmp if fps_tmp > 0 else 30.0)
+
+    start_img_uri = None
+    vi = load_video_info(csv_path.with_suffix(".mp4"))
+    if vi:
+        frame_idx = int(round(t_start_sec * vi["fps"]))
+        rgb = vi["get_frame"](frame_idx)  # 既存: RGB ndarray が返る
+        if rgb is not None:
+            pil = Image.fromarray(rgb)
+            bio = io.BytesIO()
+            pil.save(bio, format="JPEG", quality=85)
+            start_img_uri = "data:image/jpeg;base64," + base64.b64encode(bio.getvalue()).decode("ascii")
+
+
+    # 6) レポートHTML生成 → 印刷ツールバーでラップ
     try:
-        report_html = build_report_html_from_df(
-            df_for_report,
-            basic_meta=basic_meta,
-            file_meta=file_meta,
-        )
+        report_html = build_report_html_from_df(df_for_report, meta=report_meta, start_img_uri=start_img_uri)
     except Exception as e:
         st.error(f"レポートHTMLの生成に失敗しました。\n{e}")
         st.stop()
 
-    # 6. 印刷UIでラップ（report_core.render_report_with_print_toolbar）:contentReference[oaicite:6]{index=6}
     wrapped_html = render_report_with_print_toolbar(report_html) if report_html else ""
 
-    # 7. 表示
+    # 6) 表示
     if wrapped_html:
         st.components.v1.html(wrapped_html, height=1000, scrolling=False)
     else:
         st.warning("レポートHTMLが空でした。テンプレートや入力データをご確認ください。")
 
-    # 8. CSV/メタの確認用デバッグ情報（Report.pyもデバッグ出してたので載せておく）:contentReference[oaicite:7]{index=7}
+    # 7) デバッグ表示（必要に応じて折りたたみ）
     with st.expander("デバッグ情報（CSVメタ / basic_meta / file_meta）", expanded=False):
         st.write("CSVパス:", csv_path.as_posix())
-        st.json({
-            "basic_meta": basic_meta,
-            "file_meta": file_meta,
-            "measured_at": measured_at,
-            "duration": duration_str,
-        }, expanded=False)
+        st.json(
+            {
+
+                "measured_at": measured_at,
+                "duration": duration_str,
+            },
+            expanded=False,
+        )
         st.dataframe(df_for_report.head(20))

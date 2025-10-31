@@ -84,6 +84,30 @@
   .ph-img{width:100%;height:140px}
   .ph-wide{width:100%;height:120px}
 
+  .basic-grid{
+    display:grid;
+    grid-template-columns: 1fr 26mm; /* 右は小さめ固定幅 */
+    gap:8px;
+    align-items:start;
+  }
+  .startshot{
+    width:100%;
+    height:26mm;                /* 正方形寄りの小枠 */
+    object-fit:contain;         /* 全体を収める（切り抜かない） */
+    border:1px solid #e5e7eb;
+    border-radius:6px;
+    display:block;
+    background:#fff;
+  }
+  .startshot-cap{
+    font-size:10px;
+    color:#6b7280;
+    text-align:center;
+    margin-top:4px;
+    line-height:1.2;
+  }
+
+
   /* ===== 印刷時の確実1ページ化オーバーライド ===== */
   @media print{
     /* ページ内余白ゼロ化で有効領域を最大化 */
@@ -128,7 +152,7 @@
     <h1>レポート案　野球スイング</h1>
     <div class="meta">
       <div>{{ meta.date or '' }}</div>
-      <div>選手名：{{ player_name or meta.player_name or meta.athlete_name or '—' }}</div>
+      <div>選手名：{{ user_name or meta.user_name or meta.athlete_name or '—' }}</div>
       <div>ファイル名：{{ meta.filename or '—' }}</div>
     </div>
   </header>
@@ -139,14 +163,26 @@
       <div class="card">
         <h3>基本情報</h3>
         <div class="card-body">
-          <div class="kv">
-            <div>選手名</div><div>{{ player_name or meta.player_name or meta.athlete_name or '—' }}</div>
-            <div>身長</div><div>{{ meta.height_cm or '—' }} cm</div>
-            <div>体重</div><div>{{ meta.weight_kg or '—' }} kg</div>
-            <div>足の大きさ</div><div>{{ meta.foot_size_cm or '—' }} cm</div>
-            <div>右/左打ち</div><div>{{ meta.handedness or '—' }}</div>
-            <div>ステップ幅</div><div>{{ meta.step_width_cm or '—' }} cm</div>
-            <div>計測時間</div><div>{{ meta.duration_sec or '—' }}</div>
+          <div class="basic-grid">
+            <!-- 左：従来の情報表 -->
+            <div class="kv">
+              <div>選手名</div><div>{{ user_name or meta.user_name or meta.athlete_name or '—' }}</div>
+              <div>身長</div><div>{{ meta.height_cm or '—' }} cm</div>
+              <div>体重</div><div>{{ meta.weight_kg or '—' }} kg</div>
+              <div>足の大きさ</div><div>{{ meta.foot_size_cm or '—' }} cm</div>
+              <div>右/左打ち</div><div>{{ meta.handedness or '—' }}</div>
+              <div>ステップ幅</div><div>{{ meta.step_width_cm or '—' }} cm</div>
+              <div>計測時間</div><div>{{ meta.duration_sec or '—' }}</div>
+            </div>
+
+            <!-- 右：開始時刻の写真（小） -->
+            <div>
+              {% if start_img_uri %}
+                <img class="startshot" src="{{ start_img_uri }}" alt="開始時刻の写真">
+              {% else %}
+                <div class="placeholder" style="width:100%;height:26mm">（開始写真なし）</div>
+              {% endif %}
+            </div>
           </div>
         </div>
       </div>
@@ -197,7 +233,7 @@
                     {% for k, v in cog_metrics.items() %}
                       <tr>
                         <td style="padding:4px 6px;border-bottom:1px solid #f1f5f9">{{ k }}</td>
-                        <td style="padding:4px 6px;text-align:right;border-bottom:1px solid #f1f5f9">{{ "%.3f"|format(v) if v is number else v }}</td>
+                        <td style="padding:4px 6px;text-align:right;border-bottom:1px solid #f1f5f9">{{ "%.2f"|format((v | default(0) | float)) }}</td>
                       </tr>
                     {% endfor %}
                   </tbody>
