@@ -5,14 +5,49 @@ import cv2
 from pathlib import Path
 import plotly.graph_objects as go
 import time
+import json
 
 # -------------------------------------------------
 # ユーティリティ
 # -------------------------------------------------
+SETTINGS_PATH = Path(__file__).parent / "settings.json"
+
+def _load_settings() -> dict:
+    if SETTINGS_PATH.exists():
+        try:
+            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # 既定スキーマ
+    return {
+        "player_view": {
+            "y_axes": {
+                "default": {"y1": "", "y2": "(なし)"},
+            }
+        }
+    }
+
+def _save_settings(cfg: dict) -> None:
+    SETTINGS_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _get_default_axes(csv_name: str) -> tuple[str, str]:
+    cfg = _load_settings()
+    pv = cfg.get("player_view", {}).get("y_axes", {})
+    y1 = pv.get("default", {}).get("y1") or ""
+    y2 = pv.get("default", {}).get("y2") or "(なし)"
+    return y1, y2
+
+def _save_default_axes(csv_name: str, y1: str, y2: str, per_file: bool = False) -> None:
+    cfg = _load_settings()
+    pv = cfg.setdefault("player_view", {}).setdefault("y_axes", {})
+
+    # 直近選択は default としても保持（次回全体の既定にする）
+    pv["default"] = {"y1": y1 or "", "y2": y2 or "(なし)"}
+    _save_settings(cfg)
 
 def get_user_meta_for_csv(csv_path: Path):
     """
-    datalist.csv から user を拾い、userlist.csv から利き手/身長/体重を取得。
+    datalist.csv から user を拾い、userlist.csv から身長/体重を取得。
     戻り値: dict(user, handedness, height_cm, weight_kg)
     """
     dl = load_datalist(DATALIST_PATH)
@@ -31,7 +66,6 @@ def get_user_meta_for_csv(csv_path: Path):
     if user:
         prow = pl[pl["user"].astype(str).str.strip() == user]
         if not prow.empty:
-            handed = str(prow["利き手"].iloc[0] or "").strip()
             height = str(prow["身長"].iloc[0] or "").strip()
             weight = str(prow["体重"].iloc[0] or "").strip()
 
@@ -248,23 +282,37 @@ with tab_graph:
     # -------------------------------------------------
     with left_col:
         st.markdown("### 軸選択")
+        
+        # 設定から取得
+        saved_y1, saved_y2 = _get_default_axes(csv_path.name)
+        # 選択肢
+        y1_options = value_cols
+        y2_options = ["(なし)"] + value_cols
+
+        # インデックスを解決（存在しなければ先頭）
+        y1_index = y1_options.index(saved_y1) if (saved_y1 in y1_options and y1_options) else 0
+        y2_index = y2_options.index(saved_y2) if (saved_y2 in y2_options and y2_options) else 0
 
         # 1本目のY軸
         y1_col = st.selectbox(
             "Y軸（第1軸）",
-            value_cols,
-            index=0 if value_cols else 0,
+            y1_options,
+            index=y1_index,
             key=prefix + "y1_col_select",
         )
 
         # 2本目のY軸(任意)
         y2_col = st.selectbox(
             "Y軸(第2軸)",
-            ["(なし)"] + value_cols,
-            index=0,
+            y2_options,
+            index=y2_index,
             key=prefix + "y2_col_select",
         )
         y2_active = (y2_col != "(なし)")
+        
+        # 直近選択の保存（変更があれば即反映）
+        if (y1_col != saved_y1) or (y2_col != saved_y2):
+            _save_default_axes(csv_path.name, y1_col, y2_col)
 
         # time列を秒に変換しておく
         x_raw = df[time_col].map(to_seconds_any)
@@ -326,26 +374,15 @@ with tab_graph:
 
         # コマ送りボタンを6分割で並べる
         step_cols = st.columns(6)
-        buttons = [
-            ("-1.00s", -1.0),
-            ("-0.30s", -0.3),
-            ("-0.01s", -0.01),
-            ("+0.01s", +0.01),
-            ("+0.30s", +0.3),
-            ("+1.00s", +1.0),
-        ]
-        for i, (label, delta_t) in enumerate(buttons):
+        steps = [(-100, "-100"), (-10, "-10"), (-1, "-1"), (1, "+1"), (10, "+10"), (100, "+100")]
+
+        for i, (delta, label) in enumerate(steps):
             with step_cols[i]:
-                if st.button(label, key=f"{prefix}stepbtn_{i}"):
-                    current_idx = st.session_state[prefix + "marker_idx"]
-                    current_t = x_vals[current_idx]
-                    new_time = current_t + delta_t
-                    # 一番近いインデックスに飛ぶ
-                    new_idx = int(np.argmin(np.abs(np.array(x_vals) - new_time)))
-                    # 範囲チェック
-                    new_idx = max(0, min(len(x_vals) - 1, new_idx))
+                if st.button(label, key=f"{prefix}_step_{label}"):
+                    idx = st.session_state[prefix + "marker_idx"]
+                    new_idx = max(0, min(len(x_vals) - 1, idx + delta))
                     st.session_state[prefix + "marker_idx"] = new_idx
-                    st.session_state[prefix + "is_playing"] = False  # コマ送り時は停止
+                    st.session_state[prefix + "is_playing"] = False
 
         # 区間指定UI
         st.markdown("#### ⏱ 区間指定")
@@ -656,7 +693,6 @@ with tab_report:
             if not pl.empty and "user" in pl.columns:
                 prow = pl[pl["user"].astype(str).str.strip() == user_from_dl]
                 if not prow.empty:
-                    handedness = str(prow.get("利き手", [""]).iloc[0] or "").strip()
                     height_cm  = str(prow.get("身長",  [""]).iloc[0] or "").strip()
                     weight_kg  = str(prow.get("体重",  [""]).iloc[0] or "").strip()
 

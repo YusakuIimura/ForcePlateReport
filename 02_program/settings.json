@@ -2,6 +2,10 @@
   "global": {
     "developmentMode": false
   },
+  "landing": {
+    "sports": ["野球", "ゴルフ", "CMJ", "歩行"],
+    "home_base_url": "http://localhost:8502"
+  },
   "server": {
     "address": "0.0.0.0",
     "port": 8501,
@@ -11,6 +15,14 @@
     "enableXsrfProtection": true
   },
   "data": {
-    "root":"C:/Users/marin/Documents/02_FIT/06_ForcePlateReport/03_data"
+    "root": "C:/Users/marin/Documents/02_FIT/06_ForcePlateReport/03_data"
+  },
+  "player_view": {
+    "y_axes": {
+      "default": {
+        "y1": "LFx",
+        "y2": "LFz"
+      }
+    }
   }
 }

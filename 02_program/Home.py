@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import quote
 import re
 import datetime
+import json
 
 st.set_page_config(page_title="Home", layout="wide")
 
@@ -13,7 +14,21 @@ USERLIST_PATH = DATA_DIR / "userlist.csv"
 
 SELECT_COL = "_select_"
 TS_COL = "_ts"
-DISPLAY_COLS = ["csv_path", "Date", "Time", "user", "利き手", "身長", "体重", "備考"]
+DISPLAY_COLS = ["csv_path", "Date", "Time", "user", "競技", "身長", "体重", "備考"]
+
+SETTINGS_PATH = Path("./settings.json")
+DEFAULT_SPORTS = ["野球", "ゴルフ", "CMJ", "歩行"]
+
+def _load_settings():
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_cfg = _load_settings()
+_landing_cfg = _cfg.get("landing", {})
+SPORTS = _landing_cfg.get("sports", DEFAULT_SPORTS)
 
 
 # -----------------
@@ -47,24 +62,24 @@ def list_fp_files(data_dir: Path) -> pd.DataFrame:
 def load_datalist(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(
-            columns=["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]
+            columns=["csv_path", "Date", "Time", "user", "競技", "身長", "体重","備考"]
         )
 
     df = pd.read_csv(path)
-    for col in ["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]:
+    for col in ["csv_path", "Date", "Time", "user", "競技", "身長", "体重","備考"]:
         if col not in df.columns:
             df[col] = ""
-    return df[["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]].copy()
+    return df[["csv_path", "Date", "Time", "user", "競技", "身長", "体重","備考"]].copy()
 
 def load_userlist(path: Path) -> pd.DataFrame:
     if not path.exists():
-        return pd.DataFrame(columns=["user", "利き手", "身長", "体重"])
+        return pd.DataFrame(columns=["user", "競技", "身長", "体重"])
 
     df = pd.read_csv(path)
-    for col in ["user", "利き手", "身長", "体重"]:
+    for col in ["user", "競技", "身長", "体重"]:
         if col not in df.columns:
             df[col] = ""
-    return df[["user", "利き手", "身長", "体重"]].copy()
+    return df[["user", "競技", "身長", "体重"]].copy()
 
 def _set_left_today():
     today = datetime.date.today()
@@ -73,6 +88,18 @@ def _set_left_today():
 def _set_right_today():
     today = datetime.date.today()
     st.session_state.right_date_range = (today, today)
+
+def _get_query_param(name: str, default: str = "") -> str:
+    try:
+        val = st.query_params.get(name, default)
+        if isinstance(val, list):
+            return val[0] if val else default
+        return val
+    except Exception:
+        params = st.experimental_get_query_params()
+        vals = params.get(name, [])
+        return vals[0] if vals else default
+
 # -----------------
 # データ構築関連
 # -----------------
@@ -80,32 +107,39 @@ def build_df_all() -> pd.DataFrame:
     """
     data/*.csv と datalist.csv と userlist.csv を統合して返す。
     常に csv_path は1行に潰して返す。
+    競技は (datalistの競技) を優先し、空なら (userlistの競技) を採用。
     """
     base_df = list_fp_files(DATA_DIR)
     dl_df   = load_datalist(DATALIST_PATH)
     pl_df   = load_userlist(USERLIST_PATH)
-    
-    # datalist は csv_path ごとに1行だけ残す
+
+    # datalist は csv_path ごとに1行だけ残す（user, 競技, 備考を持っておく）
     dl_df_unique = (
         dl_df.sort_values(["csv_path", "Date", "Time"])
              .drop_duplicates(subset=["csv_path"], keep="last")
-    )[["csv_path", "user", "備考"]].copy()
+             [["csv_path", "user", "競技", "備考"]]
+             .copy()
+    )
+    dl_df_unique.rename(columns={"競技": "競技_dl"}, inplace=True)
 
-    # userlist も user ごとに1行だけ残す
+    # userlist も user ごとに1行だけ（競技/身長/体重）
     pl_df_unique = (
         pl_df.sort_values(["user"])
              .drop_duplicates(subset=["user"], keep="last")
-    )[["user", "利き手", "身長", "体重"]].copy()
+             [["user", "競技", "身長", "体重"]]
+             .copy()
+    )
+    pl_df_unique.rename(columns={"競技": "競技_ul"}, inplace=True)
 
-    # dataフォルダにあるcsvをベースにuserをJOIN
+    # dataフォルダにあるcsvをベースに datalist をJOIN（user, 競技_dl, 備考）
     merged = pd.merge(
         base_df,
-        dl_df_unique,  # -> adds 'user'
+        dl_df_unique,
         on="csv_path",
         how="left",
     )
 
-    # user情報から利き手/身長/体重をJOIN
+    # user情報から競技_ul/身長/体重をJOIN
     merged = pd.merge(
         merged,
         pl_df_unique,
@@ -113,28 +147,31 @@ def build_df_all() -> pd.DataFrame:
         how="left",
     )
 
+    # 競技は datalist優先 → 空なら userlist
+    merged["競技"] = merged["競技_dl"].where(
+        merged["競技_dl"].notna() & (merged["競技_dl"].astype(str).str.strip() != ""),
+        merged["競技_ul"]
+    )
+
     # 欠損補完
-    for col in ["user", "利き手", "身長", "体重", "備考"]:
+    for col in ["user", "競技", "身長", "体重", "備考"]:
         if col not in merged.columns:
             merged[col] = ""
-    merged["user"] = merged["user"].fillna("")
-    merged["利き手"] = merged["利き手"].fillna("")
-    merged["身長"] = merged["身長"].fillna("")
-    merged["体重"] = merged["体重"].fillna("")
-    merged["備考"] = merged["備考"].fillna("") 
+    merged["user"]  = merged["user"].fillna("").astype(str)
+    merged["競技"]   = merged["競技"].fillna("").astype(str)
+    merged["身長"]    = merged["身長"].fillna("").astype(str)
+    merged["体重"]    = merged["体重"].fillna("").astype(str)
+    merged["備考"]    = merged["備考"].fillna("").astype(str)
 
     # タイムスタンプ列（フィルタ用）
     def to_ts(row):
         try:
-            return pd.to_datetime(
-                str(row["Date"]) + " " + str(row["Time"]),
-                errors="coerce"
-            )
+            return pd.to_datetime(str(row["Date"]) + " " + str(row["Time"]), errors="coerce")
         except Exception:
             return pd.NaT
     merged[TS_COL] = merged.apply(to_ts, axis=1)
 
-    # 念のためここでも csv_path でユニーク化
+    # 念のため csv_path でユニーク化
     merged = (
         merged.sort_values(["csv_path", "Date", "Time"])
               .drop_duplicates(subset=["csv_path"], keep="last")
@@ -143,6 +180,7 @@ def build_df_all() -> pd.DataFrame:
     # 表示用
     merged = merged[DISPLAY_COLS + [TS_COL]].copy()
     merged[SELECT_COL] = False
+
     return merged
 
 def get_user_choices(df_all: pd.DataFrame):
@@ -200,11 +238,11 @@ def write_userlist(user: str, handed: str, height: str, weight: str):
     mask = pl_df["user"].astype(str) == str(user)
 
     if mask.any():
-        pl_df.loc[mask, ["利き手", "身長", "体重"]] = [handed, height, weight]
+        pl_df.loc[mask, ["競技", "身長", "体重"]] = [handed, height, weight]
     else:
         new_row = pd.DataFrame([{
             "user": user,
-            "利き手": handed,
+            "競技": handed,
             "身長": height,
             "体重": weight,
         }])
@@ -217,7 +255,7 @@ def rebuild_and_save_datalist(df_all_current: pd.DataFrame):
     df_all_current から datalist.csv を作り直して保存。
     """
     # df_all_current: csv_path, Date, Time, user, ...
-    out = df_all_current[["csv_path", "Date", "Time", "user", "利き手", "身長", "体重","備考"]].copy()
+    out = df_all_current[["csv_path", "Date", "Time", "user", "競技", "身長", "体重","備考"]].copy()
 
     # 念のためユニーク化
     out = (
@@ -251,7 +289,7 @@ def assign_user_and_save_all(target_csv: str,
         df_all_current["csv_path"] == target_csv, "user"
     ] = user
     df_all_current.loc[
-        df_all_current["csv_path"] == target_csv, "利き手"
+        df_all_current["csv_path"] == target_csv, "競技"
     ] = handed
     df_all_current.loc[
         df_all_current["csv_path"] == target_csv, "身長"
@@ -271,12 +309,20 @@ def assign_user_and_save_all(target_csv: str,
 # -----------------
 
 
-
-
 # st.title("(解析/レポート)ビュー")
 
 # 最新ビュー
 df_all = build_df_all()
+
+valid_sports = {"野球", "ゴルフ", "CMJ", "歩行"}
+selected_sport = _get_query_param("sport", "").strip()
+
+if selected_sport in set(SPORTS):
+    mask_empty = df_all["競技"].astype(str).str.strip().isin(["", "nan", "NaN"])
+    mask_match = df_all["競技"].astype(str).str.strip() == selected_sport
+    df_all = df_all[mask_empty | mask_match].copy()
+
+    # st.info(f"ランディングで選択: **{selected_sport}**（競技が「{selected_sport}」または空欄のデータのみ表示）")
 
 left_col ,right_col = st.columns([0.4, 0.6])
 
@@ -360,7 +406,7 @@ with left_col:
             # このcsvに現在割り当たってる値を取得
             row_now = df_all_left[df_all_left["csv_path"] == target_csv].head(1)
             current_user_val = str(row_now["user"].iloc[0]) if not row_now.empty and pd.notna(row_now["user"].iloc[0]) else ""
-            current_handed_val = str(row_now["利き手"].iloc[0]) if not row_now.empty and pd.notna(row_now["利き手"].iloc[0]) else ""
+            current_handed_val = str(row_now["競技"].iloc[0]) if not row_now.empty and pd.notna(row_now["競技"].iloc[0]) else ""
             current_height_val = str(row_now["身長"].iloc[0]) if not row_now.empty and pd.notna(row_now["身長"].iloc[0]) else ""
             current_weight_val = str(row_now["体重"].iloc[0]) if not row_now.empty and pd.notna(row_now["体重"].iloc[0]) else ""
             current_remarks_val = str(row_now["備考"].iloc[0]) if not row_now.empty and pd.notna(row_now["備考"].iloc[0]) else ""
@@ -439,7 +485,7 @@ with left_col:
                     if len(row_pl) > 0:
                         st.session_state["edit_user"] = chosen_existing_user
                         st.session_state["edit_handed"] = (
-                            str(row_pl["利き手"].iloc[0]) if pd.notna(row_pl["利き手"].iloc[0]) else ""
+                            str(row_pl["競技"].iloc[0]) if pd.notna(row_pl["競技"].iloc[0]) else ""
                         )
                         st.session_state["edit_height"] = (
                             str(row_pl["身長"].iloc[0]) if pd.notna(row_pl["身長"].iloc[0]) else ""
@@ -457,7 +503,11 @@ with left_col:
                 with tile_cols[0]:
                     st.text_input("user名", key="edit_user")
                 with tile_cols[1]:
-                    st.text_input("利き手", key="edit_handed")
+                    choices = [""] + list(SPORTS)
+                    # 既存・セッションの値から初期選択を決める
+                    current = (st.session_state.get("edit_handed") or current_handed_val or "").strip()
+                    default_idx = choices.index(current) if current in choices else 0
+                    st.selectbox("競技", choices, index=default_idx, key="edit_handed")
                 with tile_cols[2]:
                     st.text_input("身長", key="edit_height")
                 with tile_cols[3]:
@@ -492,7 +542,7 @@ with left_col:
 
             if is_existing_user:
                 # 既存プロファイル（現在の登録値）
-                exist_handed = _norm(row_exist["利き手"].iloc[0])
+                exist_handed = _norm(row_exist["競技"].iloc[0])
                 exist_height = _norm(row_exist["身長"].iloc[0])
                 exist_weight = _norm(row_exist["体重"].iloc[0])
 
@@ -547,11 +597,11 @@ with left_col:
                 # 確認ダイアログ（上書き時のみ）
                 pld = st.session_state["pending_payload"]
                 old = pl_df[pl_df["user"].astype(str).str.strip() == pld["user"]].head(1)
-                old_h = _norm(old["利き手"].iloc[0]); old_ht = _norm(old["身長"].iloc[0]); old_w = _norm(old["体重"].iloc[0])
+                old_h = _norm(old["競技"].iloc[0]); old_ht = _norm(old["身長"].iloc[0]); old_w = _norm(old["体重"].iloc[0])
 
                 st.error(
                     f"⚠️ 既存ユーザー『{pld['user']}』の登録値を上書きします。\n\n"
-                    f"利き手: {old_h} → {pld['handed']}\n"
+                    f"競技: {old_h} → {pld['handed']}\n"
                     f"身長:   {old_ht} → {pld['height']}\n"
                     f"体重:   {old_w} → {pld['weight']}"
                 )
@@ -632,7 +682,7 @@ with right_col:
             "Date":     st.column_config.TextColumn("Date",     disabled=True),
             "Time":     st.column_config.TextColumn("Time",     disabled=True),
             "user":   st.column_config.TextColumn("user",   disabled=True),
-            "利き手":    st.column_config.TextColumn("利き手",    disabled=True),
+            "競技":    st.column_config.TextColumn("競技",    disabled=True),
             "身長":     st.column_config.TextColumn("身長",     disabled=True),
             "体重":     st.column_config.TextColumn("体重",     disabled=True),
             "備考":     st.column_config.TextColumn("備考",     disabled=True),
@@ -656,7 +706,7 @@ with right_col:
             if selected_rows.empty:
                 st.warning("先に一覧で1行以上チェックしてください。")
             else:
-                base_url = "http://localhost:8502"
+                base_url = "http://localhost:8503"
                 initial_tab = "graph"
 
                 urls = []
