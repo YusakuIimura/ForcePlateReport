@@ -324,127 +324,121 @@ if selected_sport in set(SPORTS):
 
     # st.info(f"ランディングで選択: **{selected_sport}**（競技が「{selected_sport}」または空欄のデータのみ表示）")
 
-left_col ,right_col = st.columns([0.4, 0.6])
-
-# 左カラム（動画見ながら1件更新）
-with left_col:
-    with st.container(border=True):
-        st.subheader("ユーザーの登録")
-        
-        col1, col2 = st.columns([0.7, 0.3]) 
-        with col1:
-            # ==== 0. 左カラム用 日付範囲 ====
-            default_start_l, default_end_l = get_date_defaults(df_all)
-            cols_l = st.columns([1, 0.35])
-            with cols_l[0]:
-                picked_range_l = st.date_input(
-                    "表示する日付範囲",
-                    value=(default_start_l, default_end_l),
-                    help="この期間の計測だけを左の対象リストに出します",
-                    key="left_date_range",
-                )
-            with cols_l[1]:
-                st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
-                st.button("本日に設定", key="btn_left_today", on_click=_set_left_today)
-        with col2:
-            user_choices = get_user_choices(df_all)
-            chosen_user = st.selectbox(
-                "ユーザーで絞り込み",
-                key="left_user_filter",
-                options=user_choices,
-                index=0,
+with st.container(border=True):
+    st.subheader("ユーザーの登録")
+    
+    col1, col2 = st.columns([0.7, 0.3]) 
+    with col1:
+        # ==== 0. 左カラム用 日付範囲 ====
+        default_start_l, default_end_l = get_date_defaults(df_all)
+        cols_l = st.columns([1, 0.35])
+        with cols_l[0]:
+            picked_range_l = st.date_input(
+                "表示する日付範囲",
+                value=(default_start_l, default_end_l),
+                help="この期間の計測だけを左の対象リストに出します",
+                key="left_date_range",
             )
-        
-        # 日付型を日時へ
-        if isinstance(picked_range_l, (list, tuple)) and len(picked_range_l) == 2:
-            start_date_l, end_date_l = picked_range_l
-        elif isinstance(picked_range_l, datetime.date):
-            start_date_l, end_date_l = picked_range_l, picked_range_l
-        else:
-            start_date_l, end_date_l = default_start_l, default_end_l
+        with cols_l[1]:
+            st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
+            st.button("本日に設定", key="btn_left_today", on_click=_set_left_today)
+    with col2:
+        user_choices = get_user_choices(df_all)
+        chosen_user = st.selectbox(
+            "ユーザーで絞り込み",
+            key="left_user_filter",
+            options=user_choices,
+            index=0,
+        )
+    
+    # 日付型を日時へ
+    if isinstance(picked_range_l, (list, tuple)) and len(picked_range_l) == 2:
+        start_date_l, end_date_l = picked_range_l
+    elif isinstance(picked_range_l, datetime.date):
+        start_date_l, end_date_l = picked_range_l, picked_range_l
+    else:
+        start_date_l, end_date_l = default_start_l, default_end_l
 
-        start_dt_l = datetime.datetime.combine(start_date_l, datetime.time.min)
-        end_dt_l   = datetime.datetime.combine(end_date_l,   datetime.time.max)
+    start_dt_l = datetime.datetime.combine(start_date_l, datetime.time.min)
+    end_dt_l   = datetime.datetime.combine(end_date_l,   datetime.time.max)
 
-        # 左カラムの対象候補を期間で絞る
-        df_all_left = df_all[df_all[TS_COL].notna() & (df_all[TS_COL] >= start_dt_l) & (df_all[TS_COL] <= end_dt_l)]
-        if chosen_user == "未登録":
-            df_all_left = df_all_left[
-                df_all_left["user"].isna()
-                | (df_all_left["user"].astype(str).str.strip() == "")
-                | (df_all_left["user"].astype(str).str.lower() == "nan")
-            ]
-        elif chosen_user != "すべて":
-            df_all_left = df_all_left[df_all_left["user"].astype(str).str.strip() == chosen_user]
+    # 左カラムの対象候補を期間で絞る
+    df_all_left = df_all[df_all[TS_COL].notna() & (df_all[TS_COL] >= start_dt_l) & (df_all[TS_COL] <= end_dt_l)]
+    if chosen_user == "未登録":
+        df_all_left = df_all_left[
+            df_all_left["user"].isna()
+            | (df_all_left["user"].astype(str).str.strip() == "")
+            | (df_all_left["user"].astype(str).str.lower() == "nan")
+        ]
+    elif chosen_user != "すべて":
+        df_all_left = df_all_left[df_all_left["user"].astype(str).str.strip() == chosen_user]
 
-        # ==== 1. 対象CSV選択 ====
-        all_csv_options = df_all_left["csv_path"].tolist()
-        _label_map = {}
-        if not df_all_left.empty:
-            # csv_path単位で1つずつ代表行を取る
-            tmp = df_all_left[["csv_path", "user"]].drop_duplicates(subset=["csv_path"])
-            for _, r in tmp.iterrows():
-                _csv = str(r["csv_path"])
-                _user = str(r["user"]).strip() if pd.notna(r["user"]) else ""
-                if (not _user) or (_user.lower() == "nan"):
-                    _user = "未登録"
-                _label_map[_csv] = f"{_csv}（{_user}）"
-        
-        
-        if not all_csv_options:
-            st.info("dataフォルダに *_FP.csv がありません。")
-        else:
-            target_csv = st.selectbox(
-                f"対象データ (csv)",
-                options=all_csv_options,
-                index=0,
-                help="この計測を誰のものか決めます",
-                key="target_csv_select",
-                format_func=lambda p: _label_map.get(p, p),
-            )
+    # ==== 1. 対象CSV選択 ====
+    all_csv_options = df_all_left["csv_path"].tolist()
+    _label_map = {}
+    if not df_all_left.empty:
+        # csv_path単位で1つずつ代表行を取る
+        tmp = df_all_left[["csv_path", "user"]].drop_duplicates(subset=["csv_path"])
+        for _, r in tmp.iterrows():
+            _csv = str(r["csv_path"])
+            _user = str(r["user"]).strip() if pd.notna(r["user"]) else ""
+            if (not _user) or (_user.lower() == "nan"):
+                _user = "未登録"
+            _label_map[_csv] = f"{_csv}（{_user}）"
+    
+    
+    if not all_csv_options:
+        st.info("dataフォルダに *_FP.csv がありません。")
+    else:
+        target_csv = st.selectbox(
+            f"対象データ (csv)",
+            options=all_csv_options,
+            index=0,
+            help="この計測を誰のものか決めます",
+            key="target_csv_select",
+            format_func=lambda p: _label_map.get(p, p),
+        )
 
-            # このcsvに現在割り当たってる値を取得
-            row_now = df_all_left[df_all_left["csv_path"] == target_csv].head(1)
-            current_user_val = str(row_now["user"].iloc[0]) if not row_now.empty and pd.notna(row_now["user"].iloc[0]) else ""
-            current_handed_val = str(row_now["競技"].iloc[0]) if not row_now.empty and pd.notna(row_now["競技"].iloc[0]) else ""
-            current_height_val = str(row_now["身長"].iloc[0]) if not row_now.empty and pd.notna(row_now["身長"].iloc[0]) else ""
-            current_weight_val = str(row_now["体重"].iloc[0]) if not row_now.empty and pd.notna(row_now["体重"].iloc[0]) else ""
-            current_remarks_val = str(row_now["備考"].iloc[0]) if not row_now.empty and pd.notna(row_now["備考"].iloc[0]) else ""
+        # このcsvに現在割り当たってる値を取得
+        row_now = df_all_left[df_all_left["csv_path"] == target_csv].head(1)
+        current_user_val = str(row_now["user"].iloc[0]) if not row_now.empty and pd.notna(row_now["user"].iloc[0]) else ""
+        current_handed_val = str(row_now["競技"].iloc[0]) if not row_now.empty and pd.notna(row_now["競技"].iloc[0]) else ""
+        current_height_val = str(row_now["身長"].iloc[0]) if not row_now.empty and pd.notna(row_now["身長"].iloc[0]) else ""
+        current_weight_val = str(row_now["体重"].iloc[0]) if not row_now.empty and pd.notna(row_now["体重"].iloc[0]) else ""
+        current_remarks_val = str(row_now["備考"].iloc[0]) if not row_now.empty and pd.notna(row_now["備考"].iloc[0]) else ""
 
-            # ==== 2. セッション初期化 ====
-            for key in [
-                "edit_user", "edit_handed", "edit_height", "edit_weight", "edit_remarks",
-                "bound_csv",
-                "pending_confirm",          # ← 確認待ちフラグ
-                "pending_target_csv",       # ← 確認対象のcsv
-                "pending_payload",          # ← 保存予定の内容
-            ]:
-                if key not in st.session_state:
-                    st.session_state[key] = "" if key != "pending_confirm" else False
+        # ==== 2. セッション初期化 ====
+        for key in [
+            "edit_user", "edit_handed", "edit_height", "edit_weight", "edit_remarks",
+            "bound_csv",
+            "pending_confirm",          # ← 確認待ちフラグ
+            "pending_target_csv",       # ← 確認対象のcsv
+            "pending_payload",          # ← 保存予定の内容
+            "existing_user_select_prev",
+        ]:
+            if key not in st.session_state:
+                st.session_state[key] = "" if key != "pending_confirm" else False
 
-            # CSV切り替え時はフォームを最新状態でリセットし、確認フラグも解除
-            if st.session_state["bound_csv"] != target_csv:
-                st.session_state["edit_user"] = current_user_val
-                st.session_state["edit_handed"] = current_handed_val
-                st.session_state["edit_height"] = current_height_val
-                st.session_state["edit_weight"] = current_weight_val
-                st.session_state["edit_remarks"] = current_remarks_val
-                st.session_state["bound_csv"] = target_csv
-                st.session_state["pending_confirm"] = False
-                st.session_state["pending_target_csv"] = ""
-                st.session_state["pending_payload"] = {}
+        # ==== 3 & 4. 動画プレビュー ＋ ユーザー情報 ====
+        st.markdown("##### 動画 & ユーザー情報")
 
-            # ==== 3. 動画プレビュー ====
-            st.markdown("##### 動画プレビュー")
+        video_col, info_col = st.columns([0.45, 0.55])  # 比率はお好みで
+
+        # 左：動画
+        with video_col:
             mp4_candidate = (DATA_DIR / target_csv).with_suffix(".mp4")
             if mp4_candidate.exists():
                 st.video(str(mp4_candidate))
             else:
                 st.info("対応する動画(.mp4)が見つかりませんでした。")
 
-            # ==== 4. ユーザー情報（左:既存, 真ん中:矢印, 右:フォーム） ====
-            st.markdown("##### ユーザー情報")
-            st.caption("既存ユーザーリストからデータを読み込み採用  \nもしくは新規にユーザー情報を記入しデータベースを更新してください")
+        # 右：ユーザー情報
+        with info_col:
+            st.markdown("###### ユーザー情報")
+            st.caption(
+                "既存ユーザーリストから読み込み  \n"
+                "もしくは新規にユーザー情報を記入しデータベースを更新してください"
+            )
 
             pl_df = load_userlist(USERLIST_PATH)
             existing_users = (
@@ -455,47 +449,76 @@ with left_col:
                 .replace("nan", "")
                 .tolist()
             )
-            existing_users = sorted({p for p in existing_users if p})
+            existing_users = sorted([u for u in existing_users if u])  # 空文字を除いてソート
 
-            left_col_inner, mid_col, right_col_inner = st.columns([0.3, 0.2, 0.5])
+            # ★ CSV切り替え時は、CSVの内容に合わせてドロップダウンとフォームを同期
+            if st.session_state["bound_csv"] != target_csv:
+                st.session_state["bound_csv"] = target_csv
+                st.session_state["pending_confirm"] = False
+                st.session_state["pending_target_csv"] = ""
+                st.session_state["pending_payload"] = {}
+
+                if current_user_val and current_user_val in existing_users:
+                    # 既にこの計測にユーザー名が入っている → そのユーザーを選択状態に
+                    st.session_state["existing_user_select"] = current_user_val
+                    st.session_state["existing_user_select_prev"] = current_user_val
+
+                    st.session_state["edit_user"] = current_user_val
+                    st.session_state["edit_handed"] = current_handed_val
+                    st.session_state["edit_height"] = current_height_val
+                    st.session_state["edit_weight"] = current_weight_val
+                    st.session_state["edit_remarks"] = current_remarks_val
+                else:
+                    # ユーザー未登録 → 新規登録モード
+                    st.session_state["existing_user_select"] = "（新規登録）"
+                    st.session_state["existing_user_select_prev"] = "（新規登録）"
+
+                    st.session_state["edit_user"] = ""
+                    st.session_state["edit_handed"] = ""
+                    st.session_state["edit_height"] = ""
+                    st.session_state["edit_weight"] = ""
+                    # 備考だけは datalist.csv の値を初期表示にしておく
+                    st.session_state["edit_remarks"] = current_remarks_val
+
+            left_col_inner, right_col_inner = st.columns([0.3, 0.7])
 
             # 左：既存プレイヤー選択
             with left_col_inner:
                 chosen_existing_user = st.selectbox(
                     "ユーザーリスト",
                     options=["（新規登録）"] + existing_users,
-                    index=0,
                     key="existing_user_select",
-                    help="選んで➡を押すと右フォームに反映されます",
+                    help="選ぶと右フォームに反映されます",
                 )
 
-            # 中央：➡ボタン
-            with mid_col:
-                st.markdown("<div style='height:1.9em'></div>", unsafe_allow_html=True)
-
-                def load_from_existing():
-                    """選んだ既存プレイヤーの情報をフォームにコピー"""
+                prev = st.session_state.get("existing_user_select_prev", None)
+                if chosen_existing_user != prev:
                     if chosen_existing_user == "（新規登録）":
+                        # 新規登録の場合はフォームをクリア
                         st.session_state["edit_user"] = ""
                         st.session_state["edit_handed"] = ""
                         st.session_state["edit_height"] = ""
                         st.session_state["edit_weight"] = ""
-                        return
-                    row_pl = pl_df[pl_df["user"] == chosen_existing_user].head(1)
-                    if len(row_pl) > 0:
-                        st.session_state["edit_user"] = chosen_existing_user
-                        st.session_state["edit_handed"] = (
-                            str(row_pl["競技"].iloc[0]) if pd.notna(row_pl["競技"].iloc[0]) else ""
-                        )
-                        st.session_state["edit_height"] = (
-                            str(row_pl["身長"].iloc[0]) if pd.notna(row_pl["身長"].iloc[0]) else ""
-                        )
-                        st.session_state["edit_weight"] = (
-                            str(row_pl["体重"].iloc[0]) if pd.notna(row_pl["体重"].iloc[0]) else ""
-                        )
-                    # 既存プレイヤーを読み込んだあとも、まだ「pending_confirm」は触らない
+                        # 備考も新規としてクリア（ここは好みに応じて）
+                        # st.session_state["edit_remarks"] = ""
+                    else:
+                        # 既存ユーザーの情報を userlist から読み込む
+                        row_pl = pl_df[pl_df["user"] == chosen_existing_user].head(1)
+                        if len(row_pl) > 0:
+                            st.session_state["edit_user"] = chosen_existing_user
+                            st.session_state["edit_handed"] = (
+                                str(row_pl["競技"].iloc[0]) if pd.notna(row_pl["競技"].iloc[0]) else ""
+                            )
+                            st.session_state["edit_height"] = (
+                                str(row_pl["身長"].iloc[0]) if pd.notna(row_pl["身長"].iloc[0]) else ""
+                            )
+                            st.session_state["edit_weight"] = (
+                                str(row_pl["体重"].iloc[0]) if pd.notna(row_pl["体重"].iloc[0]) else ""
+                            )
+                            # userlist 側に備考を持つならここで反映してもよい
 
-                st.button("採用　➡", on_click=load_from_existing, key="btn_load_user")
+                    # 前回値を更新
+                    st.session_state["existing_user_select_prev"] = chosen_existing_user
 
             # 右：フォーム（タイル配置）
             with right_col_inner:
@@ -504,8 +527,8 @@ with left_col:
                     st.text_input("user名", key="edit_user")
                 with tile_cols[1]:
                     choices = [""] + list(SPORTS)
-                    # 既存・セッションの値から初期選択を決める
-                    current = (st.session_state.get("edit_handed") or current_handed_val or "").strip()
+                    # セッションの値のみから初期選択を決める
+                    current = (st.session_state.get("edit_handed") or "").strip()
                     default_idx = choices.index(current) if current in choices else 0
                     st.selectbox("競技", choices, index=default_idx, key="edit_handed")
                 with tile_cols[2]:
@@ -520,7 +543,6 @@ with left_col:
                 )
 
             # ==== 5. 保存ボタン or 上書き確認 ====
-
             # フォームの内容
             form_user = st.session_state["edit_user"].strip()
             form_handed = (st.session_state["edit_handed"] or "").strip()
@@ -535,10 +557,18 @@ with left_col:
             row_exist = pl_df[pl_df["user"].astype(str).str.strip() == form_user]
             is_existing_user = bool(form_user) and not row_exist.empty
             
-            _display_user = form_user or (current_user_val.strip() if current_user_val else "")
-            if not _display_user:
-                _display_user = "未登録"
-            st.markdown(f"下の「ユーザー登録ボタン」でこのデータを**{_display_user}**選手のデータとして登録します")
+            # ★ メッセージ表示用の名前は、まずドロップダウンに揃える
+            if chosen_existing_user == "（新規登録）":
+                _display_user = form_user or "（新規登録）"
+            else:
+                _display_user = chosen_existing_user
+                # 右フォームで名前を書き換えているならそちらを優先
+                if form_user and form_user != chosen_existing_user:
+                    _display_user = form_user
+
+            st.markdown(
+                f"下の「登録ボタン」でこのデータを**{_display_user}**選手のデータとして登録します"
+            )
 
             if is_existing_user:
                 # 既存プロファイル（現在の登録値）
@@ -588,7 +618,7 @@ with left_col:
                         st.rerun()
 
                 st.button(
-                    "💾　ユーザー登録",
+                    "💾　登録",
                     key="save_button",
                     on_click=on_press_save,
                 )
@@ -633,121 +663,121 @@ with left_col:
                     st.button("❌ キャンセル", key="cancel_overwrite", on_click=cancel_confirm)
 
 
-# 右カラム（閲覧専用 + 絞り込み + 解析起動）
-with right_col:
-    with st.container(border=True):
-        st.subheader("(解析/レポート)ビュー")
-        # フィルタUI
-        col1, col2 = st.columns([0.7, 0.3]) 
-        with col1:
-            default_start_r, default_end_r = get_date_defaults(df_all)
-            cols_r = st.columns([0.7, 0.3])
-            with cols_r[0]:
-                picked_range_r = st.date_input(
-                    "表示する日付範囲",
-                    value=(default_start_r, default_end_r),
-                    help="この期間の計測だけを右の対象リストに出します",
-                    key="right_date_range",
-                )
-            with cols_r[1]:
-                st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
-                st.button("本日に設定", key="btn_right_today", on_click=_set_right_today)
-        
-        with col2:
-            user_choices = get_user_choices(df_all)
-            chosen_user = st.selectbox(
-                "ユーザーで絞り込み",
-                key = "right_user_filter",
-                options=user_choices,
-                index=0,
+
+# 下カラム（閲覧専用 + 絞り込み + 解析起動）
+with st.container(border=True):
+    st.subheader("(解析/レポート)ビュー")
+    # フィルタUI
+    col1, col2 = st.columns([0.7, 0.3]) 
+    with col1:
+        default_start_r, default_end_r = get_date_defaults(df_all)
+        cols_r = st.columns([0.7, 0.3])
+        with cols_r[0]:
+            picked_range_r = st.date_input(
+                "表示する日付範囲",
+                value=(default_start_r, default_end_r),
+                help="この期間の計測だけを右の対象リストに出します",
+                key="right_date_range",
             )
-
-        if isinstance(picked_range_r, (list, tuple)) and len(picked_range_r) == 2:
-            start_date, end_date = picked_range_r
-        elif isinstance(picked_range_r, datetime.date):
-            start_date, end_date = picked_range_r, picked_range_r
-        else:
-            start_date, end_date = default_start_r, default_end_r
-
-        start_dt = datetime.datetime.combine(start_date, datetime.time.min)
-        end_dt   = datetime.datetime.combine(end_date, datetime.time.max)
-
-        # フィルタ後データ
-        df_for_view = filter_df_for_display(df_all, chosen_user, start_dt, end_dt)
-
-        st.markdown("#### 計測データ一覧")
-        column_cfg = {
-            SELECT_COL: st.column_config.CheckboxColumn("選択", default=False),
-            "csv_path": st.column_config.TextColumn("csv_path", disabled=True),
-            "Date":     st.column_config.TextColumn("Date",     disabled=True),
-            "Time":     st.column_config.TextColumn("Time",     disabled=True),
-            "user":   st.column_config.TextColumn("user",   disabled=True),
-            "競技":    st.column_config.TextColumn("競技",    disabled=True),
-            "身長":     st.column_config.TextColumn("身長",     disabled=True),
-            "体重":     st.column_config.TextColumn("体重",     disabled=True),
-            "備考":     st.column_config.TextColumn("備考",     disabled=True),
-        }
-
-        view_cols = [SELECT_COL] + [c for c in DISPLAY_COLS] 
-        edited = st.data_editor(
-            df_for_view[view_cols],
-            hide_index=True,
-            key="datalist_editor",
-            column_config=column_cfg,
+        with cols_r[1]:
+            st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
+            st.button("本日に設定", key="btn_right_today", on_click=_set_right_today)
+    
+    with col2:
+        user_choices = get_user_choices(df_all)
+        chosen_user = st.selectbox(
+            "ユーザーで絞り込み",
+            key = "right_user_filter",
+            options=user_choices,
+            index=0,
         )
 
+    if isinstance(picked_range_r, (list, tuple)) and len(picked_range_r) == 2:
+        start_date, end_date = picked_range_r
+    elif isinstance(picked_range_r, datetime.date):
+        start_date, end_date = picked_range_r, picked_range_r
+    else:
+        start_date, end_date = default_start_r, default_end_r
 
-        # 解析ビュー起動
-        st.markdown("#### 解析ビュー起動")
-        if st.button("🚀 新規タブで解析ビューを開く"):
-            sel_mask = edited[SELECT_COL] == True
-            selected_rows = edited[sel_mask].copy()
+    start_dt = datetime.datetime.combine(start_date, datetime.time.min)
+    end_dt   = datetime.datetime.combine(end_date, datetime.time.max)
 
-            if selected_rows.empty:
-                st.warning("先に一覧で1行以上チェックしてください。")
-            else:
-                base_url = "http://localhost:8503"
-                initial_tab = "graph"
+    # フィルタ後データ
+    df_for_view = filter_df_for_display(df_all, chosen_user, start_dt, end_dt)
 
-                urls = []
-                for _, r in selected_rows.iterrows():
-                    fname = str(r["csv_path"]).strip()
-                    if not fname:
-                        continue
-                    abs_path = (DATA_DIR / fname).resolve()
-                    encoded_csv_path = quote(str(abs_path))
-                    url = f"{base_url}/?csv_path={encoded_csv_path}&tab={initial_tab}"
-                    urls.append(url)
+    st.markdown("#### 計測データ一覧")
+    column_cfg = {
+        SELECT_COL: st.column_config.CheckboxColumn("選択", default=False),
+        "csv_path": st.column_config.TextColumn("csv_path", disabled=True),
+        "Date":     st.column_config.TextColumn("Date",     disabled=True),
+        "Time":     st.column_config.TextColumn("Time",     disabled=True),
+        "user":   st.column_config.TextColumn("user",   disabled=True),
+        "競技":    st.column_config.TextColumn("競技",    disabled=True),
+        "身長":     st.column_config.TextColumn("身長",     disabled=True),
+        "体重":     st.column_config.TextColumn("体重",     disabled=True),
+        "備考":     st.column_config.TextColumn("備考",     disabled=True),
+    }
 
-                if not urls:
-                    st.warning("有効な csv_path がありませんでした。")
-                else:
-                    js_lines = ["<script>", "const urls = ["]
-                    for u in urls:
-                        js_lines.append(f'    "{u}",')
-                    js_lines.append("];")
-                    js_lines.append("for (const link of urls) { window.open(link, '_blank'); }")
-                    js_lines.append("</script>")
-                    js_code = "\n".join(js_lines)
+    view_cols = [SELECT_COL] + [c for c in DISPLAY_COLS] 
+    edited = st.data_editor(
+        df_for_view[view_cols],
+        hide_index=True,
+        key="datalist_editor",
+        column_config=column_cfg,
+    )
 
-                    st.components.v1.html(js_code, height=0, scrolling=False)
 
-        # チェック済みプレビュー
-        st.markdown("#### 現在チェックされている行（デバッグ用　最終的には削除）")
-        sel_mask_prev = edited[SELECT_COL] == True
-        sel_prev = edited[sel_mask_prev].copy()
-        if sel_prev.empty:
-            st.info("まだチェックされていません。")
+    # 解析ビュー起動
+    st.markdown("#### 解析ビュー起動")
+    if st.button("🚀 新規タブで解析ビューを開く"):
+        sel_mask = edited[SELECT_COL] == True
+        selected_rows = edited[sel_mask].copy()
+
+        if selected_rows.empty:
+            st.warning("先に一覧で1行以上チェックしてください。")
         else:
-            prev_list = []
-            for _, r in sel_prev.iterrows():
-                prev_list.append({
-                    "csv_path": r["csv_path"],
-                    "user": r["user"],
-                    "Date": r["Date"],
-                    "Time": r["Time"],
-                })
-            st.write(prev_list)
+            base_url = "http://localhost:8503"
+            initial_tab = "graph"
+
+            urls = []
+            for _, r in selected_rows.iterrows():
+                fname = str(r["csv_path"]).strip()
+                if not fname:
+                    continue
+                abs_path = (DATA_DIR / fname).resolve()
+                encoded_csv_path = quote(str(abs_path))
+                url = f"{base_url}/?csv_path={encoded_csv_path}&tab={initial_tab}"
+                urls.append(url)
+
+            if not urls:
+                st.warning("有効な csv_path がありませんでした。")
+            else:
+                js_lines = ["<script>", "const urls = ["]
+                for u in urls:
+                    js_lines.append(f'    "{u}",')
+                js_lines.append("];")
+                js_lines.append("for (const link of urls) { window.open(link, '_blank'); }")
+                js_lines.append("</script>")
+                js_code = "\n".join(js_lines)
+
+                st.components.v1.html(js_code, height=0, scrolling=False)
+
+    # チェック済みプレビュー
+    st.markdown("#### 現在チェックされている行（デバッグ用　最終的には削除）")
+    sel_mask_prev = edited[SELECT_COL] == True
+    sel_prev = edited[sel_mask_prev].copy()
+    if sel_prev.empty:
+        st.info("まだチェックされていません。")
+    else:
+        prev_list = []
+        for _, r in sel_prev.iterrows():
+            prev_list.append({
+                "csv_path": r["csv_path"],
+                "user": r["user"],
+                "Date": r["Date"],
+                "Time": r["Time"],
+            })
+        st.write(prev_list)
 
 
 

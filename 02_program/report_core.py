@@ -27,10 +27,10 @@ def log(msg: str):
     st.session_state.setdefault("logs", [])
     st.session_state["logs"].append(f"{dt.datetime.now():%H:%M:%S}  {msg}")
     st.session_state["logs"] = st.session_state["logs"][-200:]
-    try:
-        st.toast(msg, icon="🛠️")
-    except Exception:
-        pass
+    # try:
+    #     st.toast(msg, icon="🛠️")
+    # except Exception:
+    #     pass
 
 def _base_dir() -> Path:
     """PyInstaller対応のベースディレクトリ解決"""
