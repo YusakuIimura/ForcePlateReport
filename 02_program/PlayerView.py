@@ -385,7 +385,6 @@ with tab_graph:
         video_times_np = np.array(video_times)
         x_vals_np      = np.array(x_vals)
 
-        # 便利な共通値
         t_min = float(x_vals[0])
         t_max = float(x_vals[-1])
 
