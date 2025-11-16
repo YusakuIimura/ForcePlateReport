@@ -411,38 +411,66 @@ with tab_graph:
     # 右カラム：動画フレーム / グラフ / タイムラインスライダー
     # -------------------------------------------------
     with right_col:
-        # 右カラム内で、フレーム画像とグラフを差し替えるためのスロットを確保
-        frame_slot = st.empty()
-
+        frame_slot = st.container()
         timeline_area = st.container()
         with timeline_area:
-            graph_slot = st.empty()
+            graph_slot = st.container()
 
             # タイムラインスライダー
             max_time = float(np.nanmax(x_vals))
-            marker_idx = st.session_state[prefix + "marker_idx"]
-            current_t = x_vals[marker_idx]
 
+            play_key   = prefix + "is_playing"
+            marker_key = prefix + "marker_idx"
+            slider_key = prefix + "timeline_time"
+
+            # --- state 初期化 ---
+            if marker_key not in st.session_state:
+                st.session_state[marker_key] = 0
+            if play_key not in st.session_state:
+                st.session_state[play_key] = False
+            if slider_key not in st.session_state:
+                # 初期値は最初の時刻
+                st.session_state[slider_key] = float(x_vals[0])
+
+            # 現在の marker を安全にクランプ
+            marker_idx = st.session_state[marker_key]
+            marker_idx = max(0, min(marker_idx, len(x_vals) - 1))
+            st.session_state[marker_key] = marker_idx
+            current_t = float(x_vals[marker_idx])
+
+            # 再生中フラグ
+            is_playing = st.session_state[play_key]
+
+            # 🔸再生中はスライダーを marker に追従させるだけ
+            if is_playing:
+                st.session_state[slider_key] = current_t
+
+            # スライダー本体
             slider_val = st.slider(
                 "現在位置 (秒)",
                 min_value=0.0,
                 max_value=max_time,
-                value=float(current_t),
                 step=0.01,
-                key=prefix + "timeline_slider",
+                key=slider_key,
             )
 
-            # スライダーが動いたら marker_idx を更新
-            if abs(slider_val - current_t) > 1e-6:
+            # 🔸停止中のときだけ「スライダー操作」を index に反映
+            if not is_playing:
                 nearest_idx = int(np.argmin(np.abs(np.array(x_vals) - slider_val)))
-                st.session_state[prefix + "marker_idx"] = nearest_idx
-                st.session_state[prefix + "is_playing"] = False
-                marker_idx = nearest_idx  # ローカル変数も更新
+                if nearest_idx != st.session_state[marker_key]:
+                    st.session_state[marker_key] = nearest_idx
+                    # 念のため再生は止めておく（手動移動扱い）
+                    st.session_state[play_key] = False
 
     # -------------------------------------------------
-    # 描画関数（GraphViewer.pyの draw_graph_and_frame 相当をprefix対応にしたもの）
+    # 描画関数（グラフ＋動画フレームを1セット描画）
     # -------------------------------------------------
     def draw_graph_and_frame(marker_idx_now: int):
+        # ★ container の中身を一度クリアしてから描画することで、
+        #   再生中に縦に積み上がらないようにする
+        graph_slot.empty()
+        frame_slot.empty()
+
         # 安全化
         marker_idx_now = max(0, min(marker_idx_now, len(x_vals) - 1))
         t_marker = x_vals[marker_idx_now]
@@ -491,7 +519,7 @@ with tab_graph:
                 mode="lines",
                 name=y1_col,
                 line=dict(color="steelblue"),
-                yaxis="y",  # 左軸
+                yaxis="y",
             )
         )
 
@@ -504,11 +532,11 @@ with tab_graph:
                     mode="lines",
                     name=y2_col,
                     line=dict(color="orange"),
-                    yaxis="y2",  # 右軸
+                    yaxis="y2",
                 )
             )
 
-        # 現在位置の赤縦線（固定レンジに合わせる）
+        # 現在位置の赤縦線
         fig.add_shape(
             type="line",
             x0=t_marker,
@@ -536,11 +564,9 @@ with tab_graph:
             # レポート用：選択された時刻範囲を保存
             st.session_state["report_range"] = {"t0": float(t0), "t1": float(t1)}
         else:
-            # 選択が外れたら未設定に戻す
             st.session_state["report_range"] = None
 
-
-        # レイアウト（固定レンジを明示）
+        # レイアウト（固定レンジ）
         layout_dict = dict(
             height=240,
             margin=dict(l=40, r=40, t=20, b=30),
@@ -555,15 +581,15 @@ with tab_graph:
             ),
             xaxis=dict(
                 title="Time [s]",
-                range=[x0, x1],     # ★ 固定
-                autorange=False,    # ★ オート禁止
+                range=[x0, x1],
+                autorange=False,
                 fixedrange=True,
                 zeroline=False,
             ),
             yaxis=dict(
                 title=y1_col,
-                range=[y1_min, y1_max],  # ★ 固定
-                autorange=False,         # ★ オート禁止
+                range=[y1_min, y1_max],
+                autorange=False,
                 fixedrange=True,
                 zeroline=False,
             ),
@@ -574,8 +600,8 @@ with tab_graph:
                 title=y2_col,
                 overlaying="y",
                 side="right",
-                range=[y2_min, y2_max],  # ★ 固定
-                autorange=False,         # ★ オート禁止
+                range=[y2_min, y2_max],
+                autorange=False,
                 fixedrange=True,
                 zeroline=False,
             )
@@ -586,11 +612,10 @@ with tab_graph:
         graph_slot.plotly_chart(
             fig,
             use_container_width=True,
-            config={"staticPlot": True},  # ズーム/ドラッグ禁止でiPadでも誤タッチしにくく
+            config={"staticPlot": True},  # iPad での誤ドラッグ防止
         )
 
         # === 動画フレーム描画 ===
-        # video_info["get_frame"](frame_idx) でRGB画像が取れるようにしてある
         rgb_img = video_info["get_frame"](frame_idx)
         if rgb_img is not None:
             frame_slot.image(
@@ -601,31 +626,59 @@ with tab_graph:
         else:
             frame_slot.error("フレームを取得できませんでした。")
 
-
     # -------------------------------------------------
     # 再生ループ / 静止表示
-    # （GraphViewer.pyの while 再生ループをprefix対応にして移植）
+    # （1フレームずつ描画して rerun で進める方式）
     # -------------------------------------------------
-    if st.session_state[prefix + "is_playing"]:
-        # CSVサンプリングが~100Hzくらい、動画が30fpsくらい想定
-        # → 1フレームあたり何サンプル進めるかざっくり決める
-        step = max(1, int(100 / fps))  # 例: 3〜4サンプルずつ
-        while st.session_state[prefix + "is_playing"]:
-            idx_now = st.session_state[prefix + "marker_idx"]
-            draw_graph_and_frame(idx_now)
+    play_key      = prefix + "is_playing"
+    marker_key    = prefix + "marker_idx"
+    last_time_key = prefix + "last_frame_time"
 
-            idx_next = idx_now + step
-            if idx_next >= len(x_vals):
-                st.session_state[prefix + "is_playing"] = False
-                break
-            st.session_state[prefix + "marker_idx"] = idx_next
+    # 再生中
+    if st.session_state.get(play_key, False):
+        now = time.time()
+        last_t = st.session_state.get(last_time_key, None)
+        frame_period = 1.0 / max(fps, 1.0)  # 1フレームあたりの秒数
 
-            # フレーム間のウェイト（1/fps秒）
-            time.sleep(1.0 / fps)
+        # 初回は基準時間だけ保存
+        if last_t is None:
+            st.session_state[last_time_key] = now
+        else:
+            dt = now - last_t
+            if dt >= frame_period:
+                # 経過時間に応じて何フレーム進めるか
+                n_frames = int(dt / frame_period)
+
+                # CSV 側も 1 サンプルずつ前進させる
+                step = 1
+
+                idx = st.session_state.get(marker_key, 0)
+                idx += n_frames * step
+
+                # 終端を超えたら止める
+                if idx >= len(x_vals):
+                    idx = len(x_vals) - 1
+                    st.session_state[play_key] = False
+
+                st.session_state[marker_key] = idx
+                st.session_state[last_time_key] = now
+
+        # 現在位置を1回だけ描画
+        draw_graph_and_frame(st.session_state.get(marker_key, 0))
+
+        # まだ再生中なら次フレームのために rerun
+        if st.session_state.get(play_key, False):
+            st.rerun()
+
     else:
-        # 停止中は現在位置だけ描画
-        draw_graph_and_frame(st.session_state[prefix + "marker_idx"])
-        
+        # 🔸停止中は必ず「今の marker_idx で一度描画」する
+        #    → 起動直後・スライダー操作後もここが走る
+        st.session_state.pop(last_time_key, None)
+        draw_graph_and_frame(st.session_state.get(marker_key, 0))
+
+    
+    
+
 # -------------------------------------------------
 # タブ2: レポート
 # -------------------------------------------------
