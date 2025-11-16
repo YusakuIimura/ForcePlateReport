@@ -350,11 +350,13 @@ with tab_graph:
 
         # ▼▼▼ セッション初期化（prefix付きに変更） ▼▼▼
         defaults = {
-            prefix + "is_playing": False,       # 再生フラグ
-            prefix + "marker_idx": 0,           # 赤ラインが指すサンプルindex
-            prefix + "start_idx": None,         # 区間開始
-            prefix + "end_idx": None,           # 区間終了
+            prefix + "is_playing": False,        # 再生フラグ
+            prefix + "marker_idx": 0,            # CSV側のインデックス
+            prefix + "video_frame_idx": 0,       # 動画側のフレームインデックス
+            prefix + "start_idx": None,          # 区間開始
+            prefix + "end_idx": None,            # 区間終了
         }
+
         for k, v in defaults.items():
             if k not in st.session_state:
                 st.session_state[k] = v
@@ -362,27 +364,162 @@ with tab_graph:
         # コントロールパネル
         st.markdown("### コントロールパネル")
 
-        row_play = st.columns(2)
-        with row_play[0]:
-            if st.button("▶ 再生", key=prefix + "play_btn"):
-                st.session_state[prefix + "is_playing"] = True
-        with row_play[1]:
-            if st.button("⏸ 停止", key=prefix + "stop_btn"):
-                st.session_state[prefix + "is_playing"] = False
+        # ▶ / ⏸ トグルボタン
+        is_playing = st.session_state.get(prefix + "is_playing", False)
+        play_label = "▶ 再生 / ⏸ 停止"
 
+        if st.button(play_label, key=prefix + "play_toggle"):
+            # 再生中なら停止、停止中なら再生にトグル
+            st.session_state[prefix + "is_playing"] = not is_playing
+
+        # ⏪ / ⏩ コマ送りボタン
         st.markdown("##### ⏪ / ⏩ コマ送り")
 
-        # コマ送りボタンを6分割で並べる
         step_cols = st.columns(6)
-        steps = [(-100, "-100"), (-10, "-10"), (-1, "-1"), (1, "+1"), (10, "+10"), (100, "+100")]
 
-        for i, (delta, label) in enumerate(steps):
-            with step_cols[i]:
-                if st.button(label, key=f"{prefix}_step_{label}"):
-                    idx = st.session_state[prefix + "marker_idx"]
-                    new_idx = max(0, min(len(x_vals) - 1, idx + delta))
-                    st.session_state[prefix + "marker_idx"] = new_idx
-                    st.session_state[prefix + "is_playing"] = False
+        marker_key = prefix + "marker_idx"
+        frame_key  = prefix + "video_frame_idx"
+        slider_key = prefix + "timeline_time"
+        play_key   = prefix + "is_playing"
+
+        video_times_np = np.array(video_times)
+        x_vals_np      = np.array(x_vals)
+
+        # 便利な共通値
+        t_min = float(x_vals[0])
+        t_max = float(x_vals[-1])
+
+        # ---- -1 frame ----
+        with step_cols[0]:
+            if st.button("◀ 1f", key=prefix + "step_-1f"):
+                v_idx = st.session_state.get(frame_key)
+                if v_idx is None:
+                    # まだ video_frame_idx がないときは、今の marker から決める
+                    idx = st.session_state.get(marker_key, 0)
+                    idx = max(0, min(idx, len(x_vals) - 1))
+                    t_now = float(x_vals[idx])
+                    v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
+                v_idx = max(0, v_idx - 1)
+
+                t = float(video_times[v_idx])
+                idx = int(np.argmin(np.abs(x_vals_np - t)))
+                idx = max(0, min(idx, len(x_vals) - 1))
+
+                st.session_state[frame_key]  = v_idx
+                st.session_state[marker_key] = idx
+                st.session_state[slider_key] = float(x_vals[idx])
+                st.session_state[play_key]   = False
+
+        # ---- -0.1 sec ----
+        with step_cols[1]:
+            if st.button("◀ 0.1s", key=prefix + "step_-0_1s"):
+                # 今の時間を基準
+                if slider_key in st.session_state:
+                    t_now = float(st.session_state[slider_key])
+                else:
+                    idx = st.session_state.get(marker_key, 0)
+                    idx = max(0, min(idx, len(x_vals) - 1))
+                    t_now = float(x_vals[idx])
+                t_new = max(t_min, min(t_max, t_now - 0.1))
+
+                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
+                idx = max(0, min(idx, len(x_vals) - 1))
+
+                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                f_idx = max(0, min(f_idx, len(video_times) - 1))
+
+                st.session_state[marker_key] = idx
+                st.session_state[frame_key]  = f_idx
+                st.session_state[slider_key] = float(x_vals[idx])
+                st.session_state[play_key]   = False
+
+        # ---- -1 sec ----
+        with step_cols[2]:
+            if st.button("◀ 1s", key=prefix + "step_-1s"):
+                if slider_key in st.session_state:
+                    t_now = float(st.session_state[slider_key])
+                else:
+                    idx = st.session_state.get(marker_key, 0)
+                    idx = max(0, min(idx, len(x_vals) - 1))
+                    t_now = float(x_vals[idx])
+                t_new = max(t_min, min(t_max, t_now - 1.0))
+
+                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
+                idx = max(0, min(idx, len(x_vals) - 1))
+
+                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                f_idx = max(0, min(f_idx, len(video_times) - 1))
+
+                st.session_state[marker_key] = idx
+                st.session_state[frame_key]  = f_idx
+                st.session_state[slider_key] = float(x_vals[idx])
+                st.session_state[play_key]   = False
+
+        # ---- +1 frame ----
+        with step_cols[3]:
+            if st.button("1f ▶", key=prefix + "step_+1f"):
+                v_idx = st.session_state.get(frame_key)
+                if v_idx is None:
+                    idx = st.session_state.get(marker_key, 0)
+                    idx = max(0, min(idx, len(x_vals) - 1))
+                    t_now = float(x_vals[idx])
+                    v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
+                v_idx = min(len(video_times) - 1, v_idx + 1)
+
+                t = float(video_times[v_idx])
+                idx = int(np.argmin(np.abs(x_vals_np - t)))
+                idx = max(0, min(idx, len(x_vals) - 1))
+
+                st.session_state[frame_key]  = v_idx
+                st.session_state[marker_key] = idx
+                st.session_state[slider_key] = float(x_vals[idx])
+                st.session_state[play_key]   = False
+
+        # ---- +0.1 sec ----
+        with step_cols[4]:
+            if st.button("0.1s ▶", key=prefix + "step_+0_1s"):
+                if slider_key in st.session_state:
+                    t_now = float(st.session_state[slider_key])
+                else:
+                    idx = st.session_state.get(marker_key, 0)
+                    idx = max(0, min(idx, len(x_vals) - 1))
+                    t_now = float(x_vals[idx])
+                t_new = max(t_min, min(t_max, t_now + 0.1))
+
+                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
+                idx = max(0, min(idx, len(x_vals) - 1))
+
+                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                f_idx = max(0, min(f_idx, len(video_times) - 1))
+
+                st.session_state[marker_key] = idx
+                st.session_state[frame_key]  = f_idx
+                st.session_state[slider_key] = float(x_vals[idx])
+                st.session_state[play_key]   = False
+
+        # ---- +1 sec ----
+        with step_cols[5]:
+            if st.button("1s ▶", key=prefix + "step_+1s"):
+                if slider_key in st.session_state:
+                    t_now = float(st.session_state[slider_key])
+                else:
+                    idx = st.session_state.get(marker_key, 0)
+                    idx = max(0, min(idx, len(x_vals) - 1))
+                    t_now = float(x_vals[idx])
+                t_new = max(t_min, min(t_max, t_now + 1.0))
+
+                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
+                idx = max(0, min(idx, len(x_vals) - 1))
+
+                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                f_idx = max(0, min(f_idx, len(video_times) - 1))
+
+                st.session_state[marker_key] = idx
+                st.session_state[frame_key]  = f_idx
+                st.session_state[slider_key] = float(x_vals[idx])
+                st.session_state[play_key]   = False
+
+
 
         # 区間指定UI
         st.markdown("#### ⏱ 区間指定")
@@ -456,18 +593,24 @@ with tab_graph:
 
             # 🔸停止中のときだけ「スライダー操作」を index に反映
             if not is_playing:
-                nearest_idx = int(np.argmin(np.abs(np.array(x_vals) - slider_val)))
+                x_vals_np = np.array(x_vals)
+                nearest_idx = int(np.argmin(np.abs(x_vals_np - slider_val)))
+
                 if nearest_idx != st.session_state[marker_key]:
+                    # CSV側インデックスを更新
                     st.session_state[marker_key] = nearest_idx
-                    # 念のため再生は止めておく（手動移動扱い）
-                    st.session_state[play_key] = False
+                    st.session_state[play_key] = False  # 念のため
+
+                    # その時刻に最も近い動画フレームも更新
+                    t_marker = float(x_vals[nearest_idx])
+                    video_times_np = np.array(video_times)
+                    nearest_fidx = int(np.argmin(np.abs(video_times_np - t_marker)))
+                    st.session_state[prefix + "video_frame_idx"] = nearest_fidx
 
     # -------------------------------------------------
     # 描画関数（グラフ＋動画フレームを1セット描画）
     # -------------------------------------------------
     def draw_graph_and_frame(marker_idx_now: int):
-        # ★ container の中身を一度クリアしてから描画することで、
-        #   再生中に縦に積み上がらないようにする
         graph_slot.empty()
         frame_slot.empty()
 
@@ -475,8 +618,15 @@ with tab_graph:
         marker_idx_now = max(0, min(marker_idx_now, len(x_vals) - 1))
         t_marker = x_vals[marker_idx_now]
 
-        # CSV時間に最も近い動画フレーム番号
-        frame_idx = int(np.argmin(np.abs(video_times - t_marker)))
+        frame_key = prefix + "video_frame_idx"
+        if frame_key in st.session_state:
+            # 再生ループで決めたフレーム番号をそのまま使う
+            frame_idx = int(st.session_state[frame_key])
+        else:
+            # 初回など video_frame_idx がまだない場合だけ「時刻から最近傍フレーム」を使う
+            frame_idx = int(np.argmin(np.abs(video_times - t_marker)))
+
+        frame_idx = max(0, min(frame_idx, total_frames - 1))
 
         # === レンジ計算（固定用） ===
         def _safe_minmax(arr):
@@ -628,56 +778,57 @@ with tab_graph:
 
     # -------------------------------------------------
     # 再生ループ / 静止表示
-    # （1フレームずつ描画して rerun で進める方式）
+    # （video_frame_idx を 1 ずつ進める）
     # -------------------------------------------------
-    play_key      = prefix + "is_playing"
-    marker_key    = prefix + "marker_idx"
-    last_time_key = prefix + "last_frame_time"
+    play_key        = prefix + "is_playing"
+    marker_key      = prefix + "marker_idx"
+    video_frame_key = prefix + "video_frame_idx"
 
-    # 再生中
+    video_times_np = np.array(video_times)
+    x_vals_np      = np.array(x_vals)
+
     if st.session_state.get(play_key, False):
-        now = time.time()
-        last_t = st.session_state.get(last_time_key, None)
-        frame_period = 1.0 / max(fps, 1.0)  # 1フレームあたりの秒数
+        # --- 動画フレーム index を決定 ---
+        v_idx = st.session_state.get(video_frame_key, None)
 
-        # 初回は基準時間だけ保存
-        if last_t is None:
-            st.session_state[last_time_key] = now
+        if v_idx is None:
+            # ▶ を押した瞬間など、まだ video_frame_idx がない場合：
+            # 現在の CSV 時刻から一番近いフレームをスタート位置にする
+            c_idx = st.session_state.get(marker_key, 0)
+            c_idx = max(0, min(c_idx, len(x_vals) - 1))
+            t_marker = float(x_vals[c_idx])
+            v_idx = int(np.argmin(np.abs(video_times_np - t_marker)))
         else:
-            dt = now - last_t
-            if dt >= frame_period:
-                # 経過時間に応じて何フレーム進めるか
-                n_frames = int(dt / frame_period)
+            # 通常は 1 フレーム進めるだけ
+            v_idx += 1
 
-                # CSV 側も 1 サンプルずつ前進させる
-                step = 1
+        # 終端チェック
+        if v_idx >= len(video_times_np):
+            v_idx = len(video_times_np) - 1
+            st.session_state[play_key] = False  # 再生終了
 
-                idx = st.session_state.get(marker_key, 0)
-                idx += n_frames * step
+        st.session_state[video_frame_key] = v_idx
 
-                # 終端を超えたら止める
-                if idx >= len(x_vals):
-                    idx = len(x_vals) - 1
-                    st.session_state[play_key] = False
+        # この動画フレームの時刻に最も近い CSV index を決める
+        t_video = float(video_times_np[v_idx])
+        c_idx = int(np.argmin(np.abs(x_vals_np - t_video)))
+        c_idx = max(0, min(c_idx, len(x_vals) - 1))
+        st.session_state[marker_key] = c_idx
 
-                st.session_state[marker_key] = idx
-                st.session_state[last_time_key] = now
+        # 描画
+        draw_graph_and_frame(c_idx)
 
-        # 現在位置を1回だけ描画
-        draw_graph_and_frame(st.session_state.get(marker_key, 0))
-
-        # まだ再生中なら次フレームのために rerun
+        # まだ再生中なら、fps に合わせて少し待ってから rerun
         if st.session_state.get(play_key, False):
+            time.sleep(1.0 / max(fps, 1.0))   # ここは「できるだけ」fpsに近づけるだけ
             st.rerun()
 
     else:
-        # 🔸停止中は必ず「今の marker_idx で一度描画」する
-        #    → 起動直後・スライダー操作後もここが走る
-        st.session_state.pop(last_time_key, None)
-        draw_graph_and_frame(st.session_state.get(marker_key, 0))
-
-    
-    
+        # 停止中：現在の marker_idx で一度だけ描画
+        idx = st.session_state.get(marker_key, 0)
+        idx = max(0, min(idx, len(x_vals) - 1))
+        draw_graph_and_frame(idx)
+        
 
 # -------------------------------------------------
 # タブ2: レポート
