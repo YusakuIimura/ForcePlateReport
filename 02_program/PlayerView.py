@@ -6,6 +6,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 import time
 import json
+import base64
 
 # -------------------------------------------------
 # ユーティリティ
@@ -362,186 +363,190 @@ with tab_graph:
                 st.session_state[k] = v
 
         # コントロールパネル
-        st.markdown("### コントロールパネル")
+        with st.container(border=True):
+            st.markdown("#### コントロールパネル")
+            # ▶ / ⏸ トグルボタン
+            is_playing = st.session_state.get(prefix + "is_playing", False)
+            play_label = "▶ 再生 / ⏸ 停止"
 
-        # ▶ / ⏸ トグルボタン
-        is_playing = st.session_state.get(prefix + "is_playing", False)
-        play_label = "▶ 再生 / ⏸ 停止"
+            if st.button(play_label, key=prefix + "play_toggle"):
+                # 再生中なら停止、停止中なら再生にトグル
+                st.session_state[prefix + "is_playing"] = not is_playing
 
-        if st.button(play_label, key=prefix + "play_toggle"):
-            # 再生中なら停止、停止中なら再生にトグル
-            st.session_state[prefix + "is_playing"] = not is_playing
+            # ⏪ / ⏩ コマ送りボタン
+            st.markdown("##### ⏪ / ⏩ コマ送り")
 
-        # ⏪ / ⏩ コマ送りボタン
-        st.markdown("##### ⏪ / ⏩ コマ送り")
+            # 2段レイアウト：上3つ、下3つ
+            row1 = st.columns(3)
+            row2 = st.columns(3)
 
-        step_cols = st.columns(6)
+            marker_key = prefix + "marker_idx"
+            frame_key  = prefix + "video_frame_idx"
+            slider_key = prefix + "timeline_time"
+            play_key   = prefix + "is_playing"
 
-        marker_key = prefix + "marker_idx"
-        frame_key  = prefix + "video_frame_idx"
-        slider_key = prefix + "timeline_time"
-        play_key   = prefix + "is_playing"
+            video_times_np = np.array(video_times)
+            x_vals_np      = np.array(x_vals)
 
-        video_times_np = np.array(video_times)
-        x_vals_np      = np.array(x_vals)
+            t_min = float(x_vals[0])
+            t_max = float(x_vals[-1])
 
-        t_min = float(x_vals[0])
-        t_max = float(x_vals[-1])
+            # ===================== 1段目 =====================
 
-        # ---- -1 frame ----
-        with step_cols[0]:
-            if st.button("◀ 1f", key=prefix + "step_-1f"):
-                v_idx = st.session_state.get(frame_key)
-                if v_idx is None:
-                    # まだ video_frame_idx がないときは、今の marker から決める
-                    idx = st.session_state.get(marker_key, 0)
+            # ---- -1 frame ----
+            with row1[0]:
+                if st.button("◀ 1f", key=prefix + "step_-1f"):
+                    v_idx = st.session_state.get(frame_key)
+                    if v_idx is None:
+                        # まだ video_frame_idx がないときは、今の marker から決める
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                        v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
+                    v_idx = max(0, v_idx - 1)
+
+                    t = float(video_times[v_idx])
+                    idx = int(np.argmin(np.abs(x_vals_np - t)))
                     idx = max(0, min(idx, len(x_vals) - 1))
-                    t_now = float(x_vals[idx])
-                    v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
-                v_idx = max(0, v_idx - 1)
 
-                t = float(video_times[v_idx])
-                idx = int(np.argmin(np.abs(x_vals_np - t)))
-                idx = max(0, min(idx, len(x_vals) - 1))
+                    st.session_state[frame_key]  = v_idx
+                    st.session_state[marker_key] = idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
 
-                st.session_state[frame_key]  = v_idx
-                st.session_state[marker_key] = idx
-                st.session_state[slider_key] = float(x_vals[idx])
-                st.session_state[play_key]   = False
+            # ---- -0.1 sec ----
+            with row1[1]:
+                if st.button("◀ 0.1s", key=prefix + "step_-0_1s"):
+                    # 今の時間を基準
+                    if slider_key in st.session_state:
+                        t_now = float(st.session_state[slider_key])
+                    else:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                    t_new = max(t_min, min(t_max, t_now - 0.1))
 
-        # ---- -0.1 sec ----
-        with step_cols[1]:
-            if st.button("◀ 0.1s", key=prefix + "step_-0_1s"):
-                # 今の時間を基準
-                if slider_key in st.session_state:
-                    t_now = float(st.session_state[slider_key])
-                else:
-                    idx = st.session_state.get(marker_key, 0)
+                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
                     idx = max(0, min(idx, len(x_vals) - 1))
-                    t_now = float(x_vals[idx])
-                t_new = max(t_min, min(t_max, t_now - 0.1))
 
-                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
-                idx = max(0, min(idx, len(x_vals) - 1))
+                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                    f_idx = max(0, min(f_idx, len(video_times) - 1))
 
-                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
-                f_idx = max(0, min(f_idx, len(video_times) - 1))
+                    st.session_state[marker_key] = idx
+                    st.session_state[frame_key]  = f_idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
 
-                st.session_state[marker_key] = idx
-                st.session_state[frame_key]  = f_idx
-                st.session_state[slider_key] = float(x_vals[idx])
-                st.session_state[play_key]   = False
+            # ---- -1 sec ----
+            with row1[2]:
+                if st.button("◀ 1s", key=prefix + "step_-1s"):
+                    if slider_key in st.session_state:
+                        t_now = float(st.session_state[slider_key])
+                    else:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                    t_new = max(t_min, min(t_max, t_now - 1.0))
 
-        # ---- -1 sec ----
-        with step_cols[2]:
-            if st.button("◀ 1s", key=prefix + "step_-1s"):
-                if slider_key in st.session_state:
-                    t_now = float(st.session_state[slider_key])
-                else:
-                    idx = st.session_state.get(marker_key, 0)
+                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
                     idx = max(0, min(idx, len(x_vals) - 1))
-                    t_now = float(x_vals[idx])
-                t_new = max(t_min, min(t_max, t_now - 1.0))
 
-                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
-                idx = max(0, min(idx, len(x_vals) - 1))
+                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                    f_idx = max(0, min(f_idx, len(video_times) - 1))
 
-                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
-                f_idx = max(0, min(f_idx, len(video_times) - 1))
+                    st.session_state[marker_key] = idx
+                    st.session_state[frame_key]  = f_idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
 
-                st.session_state[marker_key] = idx
-                st.session_state[frame_key]  = f_idx
-                st.session_state[slider_key] = float(x_vals[idx])
-                st.session_state[play_key]   = False
+            # ===================== 2段目 =====================
 
-        # ---- +1 frame ----
-        with step_cols[3]:
-            if st.button("1f ▶", key=prefix + "step_+1f"):
-                v_idx = st.session_state.get(frame_key)
-                if v_idx is None:
-                    idx = st.session_state.get(marker_key, 0)
+            # ---- +1 frame ----
+            with row2[0]:
+                if st.button("1f ▶", key=prefix + "step_+1f"):
+                    v_idx = st.session_state.get(frame_key)
+                    if v_idx is None:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                        v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
+                    v_idx = min(len(video_times) - 1, v_idx + 1)
+
+                    t = float(video_times[v_idx])
+                    idx = int(np.argmin(np.abs(x_vals_np - t)))
                     idx = max(0, min(idx, len(x_vals) - 1))
-                    t_now = float(x_vals[idx])
-                    v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
-                v_idx = min(len(video_times) - 1, v_idx + 1)
 
-                t = float(video_times[v_idx])
-                idx = int(np.argmin(np.abs(x_vals_np - t)))
-                idx = max(0, min(idx, len(x_vals) - 1))
+                    st.session_state[frame_key]  = v_idx
+                    st.session_state[marker_key] = idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
 
-                st.session_state[frame_key]  = v_idx
-                st.session_state[marker_key] = idx
-                st.session_state[slider_key] = float(x_vals[idx])
-                st.session_state[play_key]   = False
+            # ---- +0.1 sec ----
+            with row2[1]:
+                if st.button("0.1s ▶", key=prefix + "step_+0_1s"):
+                    if slider_key in st.session_state:
+                        t_now = float(st.session_state[slider_key])
+                    else:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                    t_new = max(t_min, min(t_max, t_now + 0.1))
 
-        # ---- +0.1 sec ----
-        with step_cols[4]:
-            if st.button("0.1s ▶", key=prefix + "step_+0_1s"):
-                if slider_key in st.session_state:
-                    t_now = float(st.session_state[slider_key])
-                else:
-                    idx = st.session_state.get(marker_key, 0)
+                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
                     idx = max(0, min(idx, len(x_vals) - 1))
-                    t_now = float(x_vals[idx])
-                t_new = max(t_min, min(t_max, t_now + 0.1))
 
-                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
-                idx = max(0, min(idx, len(x_vals) - 1))
+                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                    f_idx = max(0, min(f_idx, len(video_times) - 1))
 
-                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
-                f_idx = max(0, min(f_idx, len(video_times) - 1))
+                    st.session_state[marker_key] = idx
+                    st.session_state[frame_key]  = f_idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
 
-                st.session_state[marker_key] = idx
-                st.session_state[frame_key]  = f_idx
-                st.session_state[slider_key] = float(x_vals[idx])
-                st.session_state[play_key]   = False
+            # ---- +1 sec ----
+            with row2[2]:
+                if st.button("1s ▶", key=prefix + "step_+1s"):
+                    if slider_key in st.session_state:
+                        t_now = float(st.session_state[slider_key])
+                    else:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                    t_new = max(t_min, min(t_max, t_now + 1.0))
 
-        # ---- +1 sec ----
-        with step_cols[5]:
-            if st.button("1s ▶", key=prefix + "step_+1s"):
-                if slider_key in st.session_state:
-                    t_now = float(st.session_state[slider_key])
-                else:
-                    idx = st.session_state.get(marker_key, 0)
+                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
                     idx = max(0, min(idx, len(x_vals) - 1))
-                    t_now = float(x_vals[idx])
-                t_new = max(t_min, min(t_max, t_now + 1.0))
 
-                idx = int(np.argmin(np.abs(x_vals_np - t_new)))
-                idx = max(0, min(idx, len(x_vals) - 1))
+                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                    f_idx = max(0, min(f_idx, len(video_times) - 1))
 
-                f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
-                f_idx = max(0, min(f_idx, len(video_times) - 1))
+                    st.session_state[marker_key] = idx
+                    st.session_state[frame_key]  = f_idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
 
-                st.session_state[marker_key] = idx
-                st.session_state[frame_key]  = f_idx
-                st.session_state[slider_key] = float(x_vals[idx])
-                st.session_state[play_key]   = False
+            # 区間指定UI
+            st.markdown("#### ⏱ 区間指定")
 
+            seg_row1 = st.columns(2)
+            with seg_row1[0]:
+                if st.button("現在位置を  \n開始時間に設定", key=prefix + "set_start"):
+                    st.session_state[prefix + "start_idx"] = st.session_state[prefix + "marker_idx"]
+            with seg_row1[1]:
+                if st.button("現在位置を  \n終了時間に設定", key=prefix + "set_end"):
+                    st.session_state[prefix + "end_idx"] = st.session_state[prefix + "marker_idx"]
 
-
-        # 区間指定UI
-        st.markdown("#### ⏱ 区間指定")
-
-        seg_row1 = st.columns(2)
-        with seg_row1[0]:
-            if st.button("現在位置を開始時間に設定", key=prefix + "set_start"):
-                st.session_state[prefix + "start_idx"] = st.session_state[prefix + "marker_idx"]
-        with seg_row1[1]:
-            if st.button("現在位置を終了時間に設定", key=prefix + "set_end"):
-                st.session_state[prefix + "end_idx"] = st.session_state[prefix + "marker_idx"]
-
-        seg_row2 = st.columns(2)
-        with seg_row2[0]:
-            if st.button("開始時間へ移動", key=prefix + "jump_start"):
-                if st.session_state[prefix + "start_idx"] is not None:
-                    st.session_state[prefix + "marker_idx"] = st.session_state[prefix + "start_idx"]
-                    st.session_state[prefix + "is_playing"] = False
-        with seg_row2[1]:
-            if st.button("終了時間へ移動", key=prefix + "jump_end"):
-                if st.session_state[prefix + "end_idx"] is not None:
-                    st.session_state[prefix + "marker_idx"] = st.session_state[prefix + "end_idx"]
-                    st.session_state[prefix + "is_playing"] = False
+            seg_row2 = st.columns(2)
+            with seg_row2[0]:
+                if st.button("開始時間へ  \n移動", key=prefix + "jump_start"):
+                    if st.session_state[prefix + "start_idx"] is not None:
+                        st.session_state[prefix + "marker_idx"] = st.session_state[prefix + "start_idx"]
+                        st.session_state[prefix + "is_playing"] = False
+            with seg_row2[1]:
+                if st.button("終了時間へ  \n移動", key=prefix + "jump_end"):
+                    if st.session_state[prefix + "end_idx"] is not None:
+                        st.session_state[prefix + "marker_idx"] = st.session_state[prefix + "end_idx"]
+                        st.session_state[prefix + "is_playing"] = False
 
     # -------------------------------------------------
     # 右カラム：動画フレーム / グラフ / タイムラインスライダー
@@ -902,6 +907,7 @@ with tab_report:
         # 表示名の優先度
         resolved_name = user_in_csv or user_from_dl or ""
         return resolved_name, handedness, height_cm, weight_kg
+
     # --------------------------------------------------------------------
 
     st.subheader("レポートビュー / Report")
@@ -933,14 +939,14 @@ with tab_report:
         "date":         date_str,
         "time":         time_str,
         "duration_sec": duration_str,
-        "user_name":  user_name,
+        "user_name":    user_name,
         "handedness":   handedness,
         "height_cm":    height_cm,
         "weight_kg":    weight_kg,
-        # 必要なら任意項目も
+        # 必要なら任意項目も追加
         # "foot_size_cm": "", "step_width_cm": "",
     }
-    
+
     # 5) 開始時刻サムネ（start_img_uri）を作る
     import io, base64
     from PIL import Image
@@ -966,28 +972,31 @@ with tab_report:
             pil.save(bio, format="JPEG", quality=85)
             start_img_uri = "data:image/jpeg;base64," + base64.b64encode(bio.getvalue()).decode("ascii")
 
-
     # 6) レポートHTML生成 → 印刷ツールバーでラップ
     try:
-        report_html = build_report_html_from_df(df_for_report, meta=report_meta, start_img_uri=start_img_uri)
+        report_html = build_report_html_from_df(
+            df_for_report,
+            meta=report_meta,
+            start_img_uri=start_img_uri,
+        )
     except Exception as e:
         st.error(f"レポートHTMLの生成に失敗しました。\n{e}")
         st.stop()
 
     wrapped_html = render_report_with_print_toolbar(report_html) if report_html else ""
 
-    # 6) 表示
+    # 7) 表示
     if wrapped_html:
-        st.components.v1.html(wrapped_html, height=1000, scrolling=False)
+        # レポート（＋ツールバー）をそのまま埋め込み
+        st.components.v1.html(wrapped_html, height=1000, scrolling=True)
     else:
         st.warning("レポートHTMLが空でした。テンプレートや入力データをご確認ください。")
 
-    # 7) デバッグ表示（必要に応じて折りたたみ）
+    # 8) デバッグ表示（必要に応じて折りたたみ）
     with st.expander("デバッグ情報（CSVメタ / basic_meta / file_meta）", expanded=False):
         st.write("CSVパス:", csv_path.as_posix())
         st.json(
             {
-
                 "measured_at": measured_at,
                 "duration": duration_str,
             },

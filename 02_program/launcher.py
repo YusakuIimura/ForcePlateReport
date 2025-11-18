@@ -1,30 +1,38 @@
-# launcher.py — settings.json を読み、Streamlit をその設定で起動
+# launcher.py - settings.json を読み込み、複数の Streamlit アプリを起動するランチャー
 import os
 import sys
 import json
+import time
+import subprocess
 from pathlib import Path
-import streamlit.web.cli as stcli
+
 
 def base_dir() -> Path:
-    # PyInstaller --onefile でも素の実行でもOKな基準ディレクトリ
+    """
+    PyInstaller (--onefile) でも通常実行でも同じように
+    「実行ファイルが置いてあるディレクトリ」を返す。
+    """
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
-def app_path() -> str:
-    return str(base_dir() / "app.py")
 
 def load_settings() -> dict:
-    """settings.json を読み込み（なければデフォルト）。型/値の軽いバリデーションも実施。"""
+    """
+    settings.json を読み込んで launcher 用の設定を返す。
+    ない場合や項目が足りない場合はデフォルトを補う。
+    """
     defaults = {
-        "global": {"developmentMode": False},
-        "server": {
-            "address": "127.0.0.1",
-            "port": 8501,
+        "launcher": {
+            "server_address": "127.0.0.1",
             "headless": False,
-            "gatherUsageStats": False,
-            "browserServerAddress": "",
-            "enableXsrfProtection": True,
-        },
+            "apps": [
+                # デフォルト：同じフォルダにある3つのアプリを起動
+                {"name": "landing", "script": "Landing.py",    "port": 8501},
+                {"name": "home",    "script": "Home.py",       "port": 8502},
+                {"name": "player",  "script": "PlayerView.py", "port": 8503},
+            ],
+        }
     }
+
     path = base_dir() / "settings.json"
     if not path.exists():
         return defaults
@@ -33,64 +41,139 @@ def load_settings() -> dict:
         with path.open("r", encoding="utf-8") as f:
             cfg = json.load(f)
     except Exception as e:
-        print(f"[launcher] settings.json の読み込みに失敗: {e}. デフォルトを使用します。")
+        print(f"[launcher] settings.json の読み込みに失敗しました: {e}")
+        print("[launcher] デフォルト設定で起動します。")
         return defaults
 
-    # マージ（足りないキーはデフォルト）
-    def merge(d, src):
-        for k, v in src.items():
-            if isinstance(v, dict):
-                d.setdefault(k, {})
-                merge(d[k], v)
-            else:
-                d.setdefault(k, v)
-        return d
+    # defaults で不足分を補完
+    launcher_cfg = cfg.get("launcher", {})
+    for k, v in defaults["launcher"].items():
+        launcher_cfg.setdefault(k, v)
 
-    cfg = merge(cfg, defaults)
+    # apps の中身もざっくりバリデーション
+    apps = []
+    for app in launcher_cfg.get("apps", []):
+        try:
+            name = str(app.get("name"))
+            script = str(app.get("script"))
+            port = int(app.get("port"))
+            apps.append({"name": name, "script": script, "port": port})
+        except Exception:
+            # 変なエントリはスキップ
+            continue
 
-    # 軽い型チェック＆補正
-    g = cfg.get("global", {})
-    s = cfg.get("server", {})
-    g["developmentMode"] = bool(g.get("developmentMode", False))
-    s["address"] = str(s.get("address", "127.0.0.1"))
+    if not apps:
+        # 1件も有効なエントリがなければ defaults をそのまま使う
+        apps = defaults["launcher"]["apps"]
+
+    launcher_cfg["apps"] = apps
+    return {"launcher": launcher_cfg}
+
+
+def build_streamlit_command(script_path: Path, port: int,
+                            address: str = "127.0.0.1",
+                            headless: bool = False) -> list[str]:
+    """
+    1つの Streamlit アプリを起動するためのコマンドを組み立てる。
+    - sys.executable を使って、「今動いている Python / exe」と同じ環境で起動。
+    - 通常の Python 実行の場合：
+        python -m streamlit run <script> --server.port=... --server.address=...
+    """
+    cmd = [
+        sys.executable,
+        "-m", "streamlit",
+        "run",
+        str(script_path),
+        f"--server.port={port}",
+        f"--server.address={address}",
+        f"--server.headless={'true' if headless else 'false'}",
+    ]
+    return cmd
+
+
+def main():
+    cfg = load_settings()
+    launcher_cfg = cfg["launcher"]
+
+    base = base_dir()
+    address = launcher_cfg.get("server_address", "127.0.0.1")
+    headless = bool(launcher_cfg.get("headless", False))
+    apps = launcher_cfg.get("apps", [])
+
+    print("======================================")
+    print("  ForcePlateReport launcher")
+    print("======================================")
+    print(f"  base_dir : {base}")
+    print(f"  address  : {address}")
+    print(f"  headless : {headless}")
+    print("  apps:")
+    for app in apps:
+        print(f"    - {app['name']}: {app['script']} (port={app['port']})")
+    print("======================================")
+
+    procs: list[subprocess.Popen] = []
+
+    # 各アプリを起動
+    for app in apps:
+        script_path = base / app["script"]
+        if not script_path.exists():
+            print(f"[launcher] WARNING: スクリプトが見つかりません: {script_path}")
+            continue
+
+        cmd = build_streamlit_command(
+            script_path=script_path,
+            port=app["port"],
+            address=address,
+            headless=headless,
+        )
+
+        print(f"[launcher] 起動: {app['name']} ({script_path}) port={app['port']}")
+        print("          cmd:", " ".join(cmd))
+
+        try:
+            p = subprocess.Popen(cmd, cwd=str(base))
+            procs.append(p)
+        except Exception as e:
+            print(f"[launcher] 起動に失敗しました ({app['name']}): {e}")
+
+    if not procs:
+        print("[launcher] 起動できたアプリがありませんでした。終了します。")
+        return
+
+    print("")
+    print("すべてのアプリを起動しました。")
+    print("ブラウザで以下のURLを開いてください：")
+    for app in apps:
+        print(f"  {app['name']}: http://{address}:{app['port']}/")
+    print("")
+    print("停止するには、このウィンドウで Ctrl+C を押してください。")
+
     try:
-        s["port"] = int(s.get("port", 8501))
-    except Exception:
-        s["port"] = 8501
-    s["headless"] = bool(s.get("headless", False))
-    s["gatherUsageStats"] = bool(s.get("gatherUsageStats", False))
-    s["browserServerAddress"] = str(s.get("browserServerAddress", "") or "")
-    s["enableXsrfProtection"] = bool(s.get("enableXsrfProtection", True))
-    return cfg
+        # どれか1つでも終了したら他も止める、という簡単な監視ループ
+        while True:
+            alive = [p.poll() is None for p in procs]
+            if not all(alive):
+                print("[launcher] いずれかのアプリが終了したため、残りも終了させます。")
+                break
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\n[launcher] Ctrl+C を検知しました。アプリを終了します。")
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+        # 念のため待つ
+        for p in procs:
+            try:
+                p.wait(timeout=5)
+            except Exception:
+                pass
+
+        print("[launcher] すべてのプロセスを終了しました。")
+
 
 if __name__ == "__main__":
-    cfg = load_settings()
-    g = cfg["global"]
-    s = cfg["server"]
-
-    # devMode と port の衝突回避（devMode=true の場合、port 指定はエラーになる版がある）
-    if g.get("developmentMode", False):
-        port_arg = None  # ポートは明示指定しない
-    else:
-        port_arg = f"--server.port={s['port']}"
-
-    # Streamlit の起動引数を組み立て
-    argv = [
-        "streamlit", "run", app_path(),
-        f"--global.developmentMode={'true' if g['developmentMode'] else 'false'}",
-        f"--server.address={s['address']}",
-        f"--server.headless={'true' if s['headless'] else 'false'}",
-        f"--browser.gatherUsageStats={'true' if s['gatherUsageStats'] else 'false'}",
-        f"--server.enableXsrfProtection={'true' if s['enableXsrfProtection'] else 'false'}",
-    ]
-    if s.get("browserServerAddress"):
-        argv.append(f"--browser.serverAddress={s['browserServerAddress']}")
-    if port_arg:
-        argv.append(port_arg)
-
-    # グローバル環境も明示（古い版への保険）
-    os.environ["STREAMLIT_GLOBAL_DEVELOPMENTMODE"] = "true" if g["developmentMode"] else "false"
-
-    # 起動
-    sys.argv = argv
-    stcli.main()
+    main()

@@ -30,6 +30,27 @@ _cfg = _load_settings()
 _landing_cfg = _cfg.get("landing", {})
 SPORTS = _landing_cfg.get("sports", DEFAULT_SPORTS)
 
+def get_server_address() -> str:
+    """
+    settings.json の launcher.server_address を読む。
+    見つからなければ 'localhost' をデフォルトにする。
+    """
+    cfg_path = Path(__file__).resolve().parent / "settings.json"
+    default = "localhost"
+    try:
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        addr = cfg.get("launcher", {}).get("server_address", default)
+        # 空文字などになっていたときの保険
+        if not addr:
+            return default
+        return str(addr)
+    except Exception:
+        return default
+
+SERVER_ADDR = get_server_address()
+
+
 
 # -----------------
 # 基本的なI/O系
@@ -422,7 +443,7 @@ with st.container(border=True):
         # ==== 3 & 4. 動画プレビュー ＋ ユーザー情報 ====
         st.markdown("##### 動画 & ユーザー情報")
 
-        video_col, info_col = st.columns([0.45, 0.55])  # 比率はお好みで
+        video_col, info_col = st.columns([0.35, 0.65])
 
         # 左：動画
         with video_col:
@@ -480,7 +501,7 @@ with st.container(border=True):
                     # 備考だけは datalist.csv の値を初期表示にしておく
                     st.session_state["edit_remarks"] = current_remarks_val
 
-            left_col_inner, right_col_inner = st.columns([0.3, 0.7])
+            left_col_inner, right_col_inner = st.columns([0.25, 0.75])
 
             # 左：既存プレイヤー選択
             with left_col_inner:
@@ -522,9 +543,9 @@ with st.container(border=True):
 
             # 右：フォーム（タイル配置）
             with right_col_inner:
-                tile_cols = st.columns([0.28, 0.18, 0.18, 0.18])
+                tile_cols = st.columns([0.3, 0.3, 0.2, 0.2])
                 with tile_cols[0]:
-                    st.text_input("user名", key="edit_user")
+                    st.text_input("ユーザー名", key="edit_user")
                 with tile_cols[1]:
                     choices = [""] + list(SPORTS)
                     # セッションの値のみから初期選択を決める
@@ -567,7 +588,7 @@ with st.container(border=True):
                     _display_user = form_user
 
             st.markdown(
-                f"下の「登録ボタン」でこのデータを**{_display_user}**選手のデータとして登録します"
+                f"下の「登録」ボタンでこのデータを**{_display_user}**選手のデータとして登録します"
             )
 
             if is_existing_user:
@@ -736,7 +757,7 @@ with st.container(border=True):
         if selected_rows.empty:
             st.warning("先に一覧で1行以上チェックしてください。")
         else:
-            base_url = "http://localhost:8503"
+            base_url = f"http://{SERVER_ADDR}:8503"
             initial_tab = "graph"
 
             urls = []
@@ -756,11 +777,13 @@ with st.container(border=True):
                 for u in urls:
                     js_lines.append(f'    "{u}",')
                 js_lines.append("];")
-                js_lines.append("for (const link of urls) { window.open(link, '_blank'); }")
+                js_lines.append("for (const link of urls) {{ window.open(link, '_blank'); }}")
                 js_lines.append("</script>")
                 js_code = "\n".join(js_lines)
 
                 st.components.v1.html(js_code, height=0, scrolling=False)
+
+
 
     # チェック済みプレビュー
     st.markdown("#### 現在チェックされている行（デバッグ用　最終的には削除）")

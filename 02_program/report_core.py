@@ -244,18 +244,112 @@ def build_report_html_from_df(df: pd.DataFrame, meta: dict, start_img_uri: str |
 # -------------------- 印刷ツールバー付きのラッパ --------------------
 
 def render_report_with_print_toolbar(report_html: str) -> str:
-    from html import escape as html_escape
-    srcdoc = html_escape(report_html, quote=True)
-    return f"""
-<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<style>
-  html,body{{height:100%;margin:0}}
-  .toolbar{{position:sticky;top:0;padding:8px 12px;background:#fff;border-bottom:1px solid #ddd}}
-  .toolbar button{{padding:6px 12px;border-radius:8px;border:1px solid #bbb;cursor:pointer}}
-  .frame-wrap{{height:calc(100% - 46px)}} iframe{{width:100%;height:100%;border:0}}
-  @page{{size:A4;margin:14mm}}
-  @media print{{.toolbar{{display:none}} body{{-webkit-print-color-adjust:exact;print-color-adjust:exact}}}}
-</style></head><body>
-  <div class="toolbar"><button onclick="(function(){{const f=document.getElementById('frame');f&&f.contentWindow&&f.contentWindow.print();}})()">A4で印刷</button></div>
-  <div class="frame-wrap"><iframe id="frame" srcdoc='{srcdoc}'></iframe></div>
-</body></html>""".strip()
+    """
+    レポートHTMLに印刷用ツールバーを付けた単独ページHTMLを返す。
+    右上に「A4で印刷」「iPad / モバイル印刷」の2ボタンを横並びで配置。
+    印刷時にはツールバーは非表示。
+    """
+    return f"""<!DOCTYPE html>
+    <html lang="ja">
+    <head>
+    <meta charset="utf-8" />
+    <title>ForcePlate Report</title>
+    <style>
+        @page {{
+        size: A4;
+        margin: 15mm;
+        }}
+
+        body {{
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        margin: 0;
+        padding: 0;
+        }}
+
+        #toolbar {{
+        text-align: right;
+        margin-bottom: 8px;
+        }}
+        #toolbar button {{
+        padding: 0.35rem 0.8rem;
+        margin-left: 4px;
+        border-radius: 0.4rem;
+        border: 1px solid #999;
+        background-color: #f5f5f5;
+        cursor: pointer;
+        font-size: 0.9rem;
+        }}
+
+        /* -------- ここから画面表示用の縮小設定 -------- */
+        @media screen {{
+        body {{
+            /* 画面上では全体を少し縮小して横幅に収める */
+            zoom: 0.8;
+            /* zoom 非対応ブラウザ向けフォールバック */
+            -webkit-transform: scale(0.8);
+            -webkit-transform-origin: top left;
+            -moz-transform: scale(0.8);
+            -moz-transform-origin: top left;
+            -o-transform: scale(0.8);
+            -o-transform-origin: top left;
+        }}
+        }}
+
+        /* -------- 印刷時は等倍に戻し、ツールバーを隠す -------- */
+        @media print {{
+        #toolbar {{
+            display: none;
+        }}
+        body {{
+            zoom: 1;
+            -webkit-transform: none;
+            -moz-transform: none;
+            -o-transform: none;
+        }}
+        }}
+    </style>
+    <script>
+        // PC向け：このタブ上でそのままA4印刷
+        function printA4() {{
+        window.print();
+        }}
+
+        // iPad / モバイル向け：レポートを新しいタブに複製して印刷
+        function printMobile() {{
+        try {{
+            var html = document.documentElement.outerHTML;
+            var w = window.open("", "_blank");
+            if (!w) {{
+            alert("ポップアップがブロックされました。ブラウザの設定でこのサイトのポップアップを許可してください。");
+            return;
+            }}
+            w.document.open();
+            w.document.write(html);
+            w.document.close();
+            setTimeout(function() {{
+            try {{
+                w.focus();
+                w.print();
+            }} catch (e) {{
+                console.error(e);
+            }}
+            }}, 500);
+        }} catch (e) {{
+            console.error(e);
+        }}
+        }}
+    </script>
+    </head>
+    <body>
+    <!-- ツールバー：右寄せで横並び -->
+    <div id="toolbar">
+        <button onclick="printA4()">🖨️ A4で印刷</button>
+        <button onclick="printMobile()">📱 iPad / モバイル印刷</button>
+    </div>
+
+    <!-- レポート本体（中身のレイアウトには一切手を触れない） -->
+    {report_html}
+    </body>
+    </html>"""

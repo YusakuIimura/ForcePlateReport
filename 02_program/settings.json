@@ -1,18 +1,12 @@
 {
-  "global": {
-    "developmentMode": false
-  },
-  "landing": {
-    "sports": ["野球", "ゴルフ", "CMJ", "歩行"],
-    "home_base_url": "http://localhost:8502"
-  },
-  "server": {
-    "address": "0.0.0.0",
-    "port": 8501,
-    "headless": true,
-    "gatherUsageStats": false,
-    "browserServerAddress": "",
-    "enableXsrfProtection": true
+  "launcher": {
+    "server_address": "0.0.0.0",
+    "headless": false,
+    "apps": [
+      { "name": "landing", "script": "Landing.py",    "port": 8501 },
+      { "name": "home",    "script": "Home.py",       "port": 8502 },
+      { "name": "player",  "script": "PlayerView.py", "port": 8503 }
+    ]
   },
   "data": {
     "root": "C:/Users/marin/Documents/02_FIT/06_ForcePlateReport/03_data"
