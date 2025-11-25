@@ -3,6 +3,20 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
+# ===== Streamlit UIカスタマイズ =====
+HIDE_STREAMLIT_STYLE = """
+    <style>
+    /* 右上メニュー（…） */
+    #MainMenu {visibility: hidden;}
+
+    /* Deployボタン/リンク */
+    button[kind="header"] {visibility: hidden;}
+    a[data-testid="stHeaderActionButton"] {visibility: hidden;}
+    </style>
+"""
+st.markdown(HIDE_STREAMLIT_STYLE, unsafe_allow_html=True)
+
+
 # ===== 設定読み込み =====
 SETTINGS_PATH = Path("./settings.json")
 DEFAULT_SPORTS = ["野球", "ゴルフ", "CMJ", "歩行"]
@@ -42,11 +56,10 @@ SPORTS = landing_cfg.get("sports", DEFAULT_SPORTS)
 # ===== UI =====
 st.set_page_config(page_title="競技を選択", layout="centered")
 st.title("競技を選んで開始")
-st.caption("選んだ競技に一致 or 空欄のデータだけがホーム画面に表示されます。")
+st.caption("競技を選んで、計測データ管理・解析準備画面へ進みましょう。")
 
 sport = st.radio("競技", SPORTS, index=0, horizontal=True)
 st.divider()
-st.write("選んだらホーム画面へ進んでください。")
 
 # if st.button("➡ ホームへ（解析/管理）を開く", use_container_width=True):
 #     js = f"""
@@ -59,7 +72,7 @@ st.write("選んだらホーム画面へ進んでください。")
 #     """
 #     components.html(js, height=0, scrolling=False)
 
-if st.button("➡ ホームへ（解析/管理）を開く", use_container_width=True):
+if st.button("➡ 計測データ管理・解析準備画面を開く", use_container_width=True):
     js = f"""
     <script>
       const sport = encodeURIComponent("{sport}");

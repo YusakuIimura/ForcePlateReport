@@ -7,11 +7,55 @@ import plotly.graph_objects as go
 import time
 import json
 import base64
+from datetime import datetime
+
+# ===== Streamlit UIカスタマイズ =====
+HIDE_STREAMLIT_STYLE = """
+    <style>
+    /* 右上メニュー（…） */
+    #MainMenu {visibility: hidden;}
+
+    /* Deployボタン/リンク */
+    button[kind="header"] {visibility: hidden;}
+    a[data-testid="stHeaderActionButton"] {visibility: hidden;}
+    </style>
+"""
+st.markdown(HIDE_STREAMLIT_STYLE, unsafe_allow_html=True)
 
 # -------------------------------------------------
 # ユーティリティ
 # -------------------------------------------------
 SETTINGS_PATH = Path(__file__).parent / "settings.json"
+
+COL_LABEL_MAP = {
+    "LFx": "左Fx",
+    "LFy": "左Fy",
+    "LFz": "左Fz",
+    "LMx": "左Mx",
+    "LMy": "左My",
+    "LMz": "左Mz",
+    "LPx": "左COPx",
+    "LPy": "左COPy",
+    "LTz": "左Tz",
+    "RFx": "右Fx",
+    "RFy": "右Fy",
+    "RFz": "右Fz",
+    "RMx": "右Mx",
+    "RMy": "右My",
+    "RMz": "右Mz",
+    "RPx": "右COPx",
+    "RPy": "右COPy",
+    "RTz": "右Tz",
+    "MFx": "合算Fx",
+    "MFy": "合算Fy",
+    "MFz": "合算Fz",
+    "MMx": "合算Mx",
+    "MMy": "合算My",
+    "MMz": "合算Mz",
+    "MPx": "合算COPx",
+    "MPy": "合算COPy",
+    "MTz": "合算Tz",
+}
 
 def _load_settings() -> dict:
     if SETTINGS_PATH.exists():
@@ -213,14 +257,41 @@ def slice_by_range(df: pd.DataFrame, idx_range):
 # ページ基本設定
 # -------------------------------------------------
 
-st.set_page_config(page_title="user View", layout="wide")
-
 # URLパラメータから csv_path と tab を取得
 params = st.query_params
 csv_path_param = params.get("csv_path", "")
 initial_tab = params.get("tab", "graph")
 
 csv_path = Path(csv_path_param)
+
+# デフォルトのタブタイトル
+page_title = "user View"
+
+# CSV が存在すれば、計測日時から YYMMDD-hhmm を作ってタブタイトルにする
+if csv_path.exists():
+    try:
+        # すでに report タブで使っているやつをここでも利用
+        from report_core import load_csv_from_path
+
+        # df_full はここでは使わないので捨てる
+        _, measured_at, date_str, time_str, _ = load_csv_from_path(csv_path)
+
+        ts_source = None
+        if measured_at not in (None, ""):
+            ts_source = measured_at
+        elif date_str or time_str:
+            ts_source = f"{date_str} {time_str}".strip()
+
+        if ts_source:
+            ts = pd.to_datetime(ts_source)
+            page_title = ts.strftime("%y%m%d-%H%M")  # 例: 251022-0930
+    except Exception:
+        # 何かあってもタイトルはデフォルトのまま
+        pass
+
+# ここでブラウザのタブタイトルを決定
+st.set_page_config(page_title=page_title, layout="wide")
+st.title("解析ビュー")
 
 if not csv_path.exists():
     st.error(f"指定されたCSVが見つかりません: {csv_path}")
@@ -282,85 +353,104 @@ with tab_graph:
     # 左カラム：軸選択 / 再生・停止 / コマ送り / 区間指定
     # -------------------------------------------------
     with left_col:
-        st.markdown("### 軸選択")
-        
-        # 設定から取得
-        saved_y1, saved_y2 = _get_default_axes(csv_path.name)
-        # 選択肢
-        y1_options = value_cols
-        y2_options = ["(なし)"] + value_cols
+        with st.container(border=True):
+            st.markdown("### 軸選択")
+            
+            # 設定から取得
+            saved_y1, saved_y2 = _get_default_axes(csv_path.name)
+            # 選択肢
+            y1_options = value_cols
+            y2_options = ["(なし)"] + value_cols
 
-        # インデックスを解決（存在しなければ先頭）
-        y1_index = y1_options.index(saved_y1) if (saved_y1 in y1_options and y1_options) else 0
-        y2_index = y2_options.index(saved_y2) if (saved_y2 in y2_options and y2_options) else 0
+            # インデックスを解決（存在しなければ先頭）
+            y1_index = y1_options.index(saved_y1) if (saved_y1 in y1_options and y1_options) else 0
+            y2_index = y2_options.index(saved_y2) if (saved_y2 in y2_options and y2_options) else 0
+            
+            # 表示を許可する列（= 辞書にキーとしてある列）のみ残す
+            allowed_cols = set(COL_LABEL_MAP.keys())
+            y1_options = [c for c in y1_options if c in allowed_cols]
+            y2_options = [c for c in y2_options if c in allowed_cols]
 
-        # 1本目のY軸
-        y1_col = st.selectbox(
-            "Y軸（第1軸）",
-            y1_options,
-            index=y1_index,
-            key=prefix + "y1_col_select",
-        )
+            # もし既存の y1_col / y2_col がリストに無くなった場合のフォールバック
+            if not y1_options:
+                y1_options = [None]  # ここは「何も選べない」状態にしたくなければ適宜調整
+            if y1_index >= len(y1_options) or y1_index < 0:
+                y1_index = 0
 
-        # 2本目のY軸(任意)
-        y2_col = st.selectbox(
-            "Y軸(第2軸)",
-            y2_options,
-            index=y2_index,
-            key=prefix + "y2_col_select",
-        )
-        y2_active = (y2_col != "(なし)")
-        
-        # 直近選択の保存（変更があれば即反映）
-        if (y1_col != saved_y1) or (y2_col != saved_y2):
-            _save_default_axes(csv_path.name, y1_col, y2_col)
+            if not y2_options:
+                y2_options = [None]
+            if y2_index >= len(y2_options) or y2_index < 0:
+                y2_index = 0
 
-        # time列を秒に変換しておく
-        x_raw = df[time_col].map(to_seconds_any)
+            # 1本目のY軸
+            y1_col = st.selectbox(
+                "Y軸（左軸）",
+                y1_options,
+                index=y1_index,
+                key=prefix + "y1_col_select",
+                format_func=lambda c: COL_LABEL_MAP.get(c, c),
+            )
 
-        # y1 を数値化
-        y1_raw = pd.to_numeric(df[y1_col], errors="coerce") if y1_col else None
-        mask1 = x_raw.notna() & y1_raw.notna()
+            # 2本目のY軸(任意)
+            y2_col = st.selectbox(
+                "Y軸(右軸)",
+                y2_options,
+                index=y2_index,
+                key=prefix + "y2_col_select",
+                format_func=lambda c: COL_LABEL_MAP.get(c, c),
+            )
+            y2_active = (y2_col != "(なし)")
+            
+            # 直近選択の保存（変更があれば即反映）
+            if (y1_col != saved_y1) or (y2_col != saved_y2):
+                _save_default_axes(csv_path.name, y1_col, y2_col)
 
-        # y2 もあれば数値化
-        if y2_active:
-            y2_raw = pd.to_numeric(df[y2_col], errors="coerce")
-            mask2 = x_raw.notna() & y2_raw.notna()
-            mask = mask1 & mask2
-        else:
-            y2_raw = None
-            mask = mask1
+            # time列を秒に変換しておく
+            x_raw = df[time_col].map(to_seconds_any)
 
-        # 描画用に絞ったデータ
-        x_vals = x_raw[mask].tolist()
-        y1_vals = y1_raw[mask].tolist()
-        y2_vals = y2_raw[mask].tolist() if y2_active else None
+            # y1 を数値化
+            y1_raw = pd.to_numeric(df[y1_col], errors="coerce") if y1_col else None
+            mask1 = x_raw.notna() & y1_raw.notna()
 
-        if not x_vals:
-            st.error("有効なデータがありません（NaN等で欠損している可能性があります）。")
-            st.stop()
+            # y2 もあれば数値化
+            if y2_active:
+                y2_raw = pd.to_numeric(df[y2_col], errors="coerce")
+                mask2 = x_raw.notna() & y2_raw.notna()
+                mask = mask1 & mask2
+            else:
+                y2_raw = None
+                mask = mask1
 
-        # 動画メタデータ (GraphViewer.pyと同じロジック)
-        if video_info is None:
-            st.error(f"{video_path.name} が見つかりません（このCSVに対応する動画がありません）。")
-            st.stop()
+            # 描画用に絞ったデータ
+            x_vals = x_raw[mask].tolist()
+            y1_vals = y1_raw[mask].tolist()
+            y2_vals = y2_raw[mask].tolist() if y2_active else None
 
-        fps = video_info["fps"]
-        total_frames = video_info["frame_count"]
-        video_times = np.arange(total_frames) / fps  # 各フレームの時刻[s]
+            if not x_vals:
+                st.error("有効なデータがありません（NaN等で欠損している可能性があります）。")
+                st.stop()
 
-        # ▼▼▼ セッション初期化（prefix付きに変更） ▼▼▼
-        defaults = {
-            prefix + "is_playing": False,        # 再生フラグ
-            prefix + "marker_idx": 0,            # CSV側のインデックス
-            prefix + "video_frame_idx": 0,       # 動画側のフレームインデックス
-            prefix + "start_idx": None,          # 区間開始
-            prefix + "end_idx": None,            # 区間終了
-        }
+            # 動画メタデータ (GraphViewer.pyと同じロジック)
+            if video_info is None:
+                st.error(f"{video_path.name} が見つかりません（このCSVに対応する動画がありません）。")
+                st.stop()
 
-        for k, v in defaults.items():
-            if k not in st.session_state:
-                st.session_state[k] = v
+            fps = video_info["fps"]
+            total_frames = video_info["frame_count"]
+            video_times = np.arange(total_frames) / fps  # 各フレームの時刻[s]
+
+            # ▼▼▼ セッション初期化（prefix付きに変更） ▼▼▼
+            defaults = {
+                prefix + "is_playing": False,        # 再生フラグ
+                prefix + "marker_idx": 0,            # CSV側のインデックス
+                prefix + "video_frame_idx": 0,       # 動画側のフレームインデックス
+                prefix + "start_idx": None,          # 区間開始
+                prefix + "end_idx": None,            # 区間終了
+            }
+
+            for k, v in defaults.items():
+                if k not in st.session_state:
+                    st.session_state[k] = v
 
         # コントロールパネル
         with st.container(border=True):
@@ -539,14 +629,42 @@ with tab_graph:
             seg_row2 = st.columns(2)
             with seg_row2[0]:
                 if st.button("開始時間へ  \n移動", key=prefix + "jump_start"):
-                    if st.session_state[prefix + "start_idx"] is not None:
-                        st.session_state[prefix + "marker_idx"] = st.session_state[prefix + "start_idx"]
+                    start_i = st.session_state.get(prefix + "start_idx")
+                    if start_i is not None:
+                        # 安全にクランプ
+                        idx = int(start_i)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t = float(x_vals[idx])
+
+                        # その時刻に最も近い動画フレーム
+                        v_idx = int(np.argmin(np.abs(video_times_np - t)))
+                        v_idx = max(0, min(v_idx, len(video_times) - 1))
+
+                        # state を一括更新
+                        st.session_state[prefix + "marker_idx"] = idx
+                        st.session_state[prefix + "video_frame_idx"] = v_idx
+                        st.session_state[prefix + "timeline_time"] = t
                         st.session_state[prefix + "is_playing"] = False
+
             with seg_row2[1]:
                 if st.button("終了時間へ  \n移動", key=prefix + "jump_end"):
-                    if st.session_state[prefix + "end_idx"] is not None:
-                        st.session_state[prefix + "marker_idx"] = st.session_state[prefix + "end_idx"]
+                    end_i = st.session_state.get(prefix + "end_idx")
+                    if end_i is not None:
+                        # 安全にクランプ
+                        idx = int(end_i)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t = float(x_vals[idx])
+
+                        # その時刻に最も近い動画フレーム
+                        v_idx = int(np.argmin(np.abs(video_times_np - t)))
+                        v_idx = max(0, min(v_idx, len(video_times) - 1))
+
+                        # state を一括更新
+                        st.session_state[prefix + "marker_idx"] = idx
+                        st.session_state[prefix + "video_frame_idx"] = v_idx
+                        st.session_state[prefix + "timeline_time"] = t
                         st.session_state[prefix + "is_playing"] = False
+
 
     # -------------------------------------------------
     # 右カラム：動画フレーム / グラフ / タイムラインスライダー
@@ -661,6 +779,11 @@ with tab_graph:
         else:
             y2_min = y2_max = None
             y_all_min, y_all_max = y1_min, y1_max
+            
+        # 表示用ラベル（凡例・軸タイトル用）
+        y1_label = COL_LABEL_MAP.get(y1_col, y1_col)
+        y2_label = COL_LABEL_MAP.get(y2_col, y2_col) if y2_active and y2_vals is not None else None
+
 
         # === グラフ作成 ===
         fig = go.Figure()
@@ -671,7 +794,7 @@ with tab_graph:
                 x=x_vals,
                 y=y1_vals,
                 mode="lines",
-                name=y1_col,
+                name=y1_label,
                 line=dict(color="steelblue"),
                 yaxis="y",
             )
@@ -684,7 +807,7 @@ with tab_graph:
                     x=x_vals,
                     y=y2_vals,
                     mode="lines",
-                    name=y2_col,
+                    name=y2_label,
                     line=dict(color="orange"),
                     yaxis="y2",
                 )
@@ -741,7 +864,7 @@ with tab_graph:
                 zeroline=False,
             ),
             yaxis=dict(
-                title=y1_col,
+                title=y1_label,
                 range=[y1_min, y1_max],
                 autorange=False,
                 fixedrange=True,
@@ -751,7 +874,7 @@ with tab_graph:
 
         if y2_active and y2_vals is not None:
             layout_dict["yaxis2"] = dict(
-                title=y2_col,
+                title=y2_label,
                 overlaying="y",
                 side="right",
                 range=[y2_min, y2_max],

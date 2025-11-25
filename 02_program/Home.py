@@ -6,7 +6,21 @@ import re
 import datetime
 import json
 
-st.set_page_config(page_title="Home", layout="wide")
+# ===== Streamlit UIカスタマイズ =====
+HIDE_STREAMLIT_STYLE = """
+    <style>
+    /* 右上メニュー（…） */
+    #MainMenu {visibility: hidden;}
+
+    /* Deployボタン/リンク */
+    button[kind="header"] {visibility: hidden;}
+    a[data-testid="stHeaderActionButton"] {visibility: hidden;}
+    </style>
+"""
+st.markdown(HIDE_STREAMLIT_STYLE, unsafe_allow_html=True)
+
+
+st.set_page_config(page_title="計測データ管理・解析準備", layout="wide")
 
 DATA_DIR = Path("data")
 DATALIST_PATH = DATA_DIR / "datalist.csv"
@@ -330,7 +344,7 @@ def assign_user_and_save_all(target_csv: str,
 # -----------------
 
 
-# st.title("(解析/レポート)ビュー")
+st.title("計測データ管理・解析準備")
 
 # 最新ビュー
 df_all = build_df_all()
@@ -346,7 +360,7 @@ if selected_sport in set(SPORTS):
     # st.info(f"ランディングで選択: **{selected_sport}**（競技が「{selected_sport}」または空欄のデータのみ表示）")
 
 with st.container(border=True):
-    st.subheader("ユーザーの登録")
+    st.subheader("計測データ紐付＆ユーザー管理")
     
     col1, col2 = st.columns([0.7, 0.3]) 
     with col1:
@@ -687,7 +701,7 @@ with st.container(border=True):
 
 # 下カラム（閲覧専用 + 絞り込み + 解析起動）
 with st.container(border=True):
-    st.subheader("(解析/レポート)ビュー")
+    st.subheader("解析データ選択＆解析ビュー起動")
     # フィルタUI
     col1, col2 = st.columns([0.7, 0.3]) 
     with col1:
@@ -785,22 +799,22 @@ with st.container(border=True):
 
 
 
-    # チェック済みプレビュー
-    st.markdown("#### 現在チェックされている行（デバッグ用　最終的には削除）")
-    sel_mask_prev = edited[SELECT_COL] == True
-    sel_prev = edited[sel_mask_prev].copy()
-    if sel_prev.empty:
-        st.info("まだチェックされていません。")
-    else:
-        prev_list = []
-        for _, r in sel_prev.iterrows():
-            prev_list.append({
-                "csv_path": r["csv_path"],
-                "user": r["user"],
-                "Date": r["Date"],
-                "Time": r["Time"],
-            })
-        st.write(prev_list)
+    # # チェック済みプレビュー
+    # st.markdown("#### 現在チェックされている行（デバッグ用　最終的には削除）")
+    # sel_mask_prev = edited[SELECT_COL] == True
+    # sel_prev = edited[sel_mask_prev].copy()
+    # if sel_prev.empty:
+    #     st.info("まだチェックされていません。")
+    # else:
+    #     prev_list = []
+    #     for _, r in sel_prev.iterrows():
+    #         prev_list.append({
+    #             "csv_path": r["csv_path"],
+    #             "user": r["user"],
+    #             "Date": r["Date"],
+    #             "Time": r["Time"],
+    #         })
+    #     st.write(prev_list)
 
 
 
