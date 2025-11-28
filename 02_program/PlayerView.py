@@ -329,16 +329,33 @@ defaults = {
 for k, v in defaults.items():
     st.session_state.setdefault(k, v)
 
+# --- タブ状態の初期化 ---
+if "main_view" not in st.session_state:
+    st.session_state["main_view"] = "📈 グラフ"
+
+if "go_report_tab" not in st.session_state:
+    st.session_state["go_report_tab"] = False
+
 # -------------------------------------------------
 # タブUI
 # -------------------------------------------------
 
-tab_graph, tab_report = st.tabs(["📈 グラフ", "📝 レポート"])
+# 疑似タブ（ラジオボタンで切り替え）
+if st.session_state.get("go_report_tab"):
+    st.session_state["main_view"] = "📝 レポート"
+    st.session_state["go_report_tab"] = False
+
+tab = st.radio(
+    "表示",
+    ["📈 グラフ", "📝 レポート"],
+    horizontal=True,
+    key="main_view",
+)
 
 # -------------------------------------------------
 # タブ1: グラフ
 # -------------------------------------------------
-with tab_graph:
+if tab == "📈 グラフ":
     #
     # ====== GraphViewerタブ本体 ======
     #
@@ -367,7 +384,7 @@ with tab_graph:
             y2_index = y2_options.index(saved_y2) if (saved_y2 in y2_options and y2_options) else 0
             
             # 表示を許可する列（= 辞書にキーとしてある列）のみ残す
-            allowed_cols = set(COL_LABEL_MAP.keys())
+            allowed_cols = set(COL_LABEL_MAP.keys()) | {"(なし)"}
             y1_options = [c for c in y1_options if c in allowed_cols]
             y2_options = [c for c in y2_options if c in allowed_cols]
 
@@ -482,39 +499,38 @@ with tab_graph:
             t_max = float(x_vals[-1])
 
             # ===================== 1段目 =====================
-
-            # ---- -1 frame ----
+            # ---- +1 sec ----
             with row1[0]:
-                if st.button("◀ 1f", key=prefix + "step_-1f"):
-                    v_idx = st.session_state.get(frame_key)
-                    if v_idx is None:
-                        # まだ video_frame_idx がないときは、今の marker から決める
-                        idx = st.session_state.get(marker_key, 0)
-                        idx = max(0, min(idx, len(x_vals) - 1))
-                        t_now = float(x_vals[idx])
-                        v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
-                    v_idx = max(0, v_idx - 1)
-
-                    t = float(video_times[v_idx])
-                    idx = int(np.argmin(np.abs(x_vals_np - t)))
-                    idx = max(0, min(idx, len(x_vals) - 1))
-
-                    st.session_state[frame_key]  = v_idx
-                    st.session_state[marker_key] = idx
-                    st.session_state[slider_key] = float(x_vals[idx])
-                    st.session_state[play_key]   = False
-
-            # ---- -0.1 sec ----
-            with row1[1]:
-                if st.button("◀ 0.1s", key=prefix + "step_-0_1s"):
-                    # 今の時間を基準
+                if st.button("1s ▶", key=prefix + "step_+1s"):
                     if slider_key in st.session_state:
                         t_now = float(st.session_state[slider_key])
                     else:
                         idx = st.session_state.get(marker_key, 0)
                         idx = max(0, min(idx, len(x_vals) - 1))
                         t_now = float(x_vals[idx])
-                    t_new = max(t_min, min(t_max, t_now - 0.1))
+                    t_new = max(t_min, min(t_max, t_now + 1.0))
+
+                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
+                    idx = max(0, min(idx, len(x_vals) - 1))
+
+                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                    f_idx = max(0, min(f_idx, len(video_times) - 1))
+
+                    st.session_state[marker_key] = idx
+                    st.session_state[frame_key]  = f_idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
+            
+            # ---- +0.2 sec ----
+            with row1[1]:
+                if st.button("0.2s ▶", key=prefix + "step_+0_2s"):
+                    if slider_key in st.session_state:
+                        t_now = float(st.session_state[slider_key])
+                    else:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                    t_new = max(t_min, min(t_max, t_now + 0.2))
 
                     idx = int(np.argmin(np.abs(x_vals_np - t_new)))
                     idx = max(0, min(idx, len(x_vals) - 1))
@@ -527,8 +543,29 @@ with tab_graph:
                     st.session_state[slider_key] = float(x_vals[idx])
                     st.session_state[play_key]   = False
 
-            # ---- -1 sec ----
+            # ---- +1 frame ----
             with row1[2]:
+                if st.button("1f ▶", key=prefix + "step_+1f"):
+                    v_idx = st.session_state.get(frame_key)
+                    if v_idx is None:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                        v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
+                    v_idx = min(len(video_times) - 1, v_idx + 1)
+
+                    t = float(video_times[v_idx])
+                    idx = int(np.argmin(np.abs(x_vals_np - t)))
+                    idx = max(0, min(idx, len(x_vals) - 1))
+
+                    st.session_state[frame_key]  = v_idx
+                    st.session_state[marker_key] = idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
+            
+            # ===================== 2段目 =====================        
+            # ---- -1 sec ----
+            with row2[0]:
                 if st.button("◀ 1s", key=prefix + "step_-1s"):
                     if slider_key in st.session_state:
                         t_now = float(st.session_state[slider_key])
@@ -548,19 +585,41 @@ with tab_graph:
                     st.session_state[frame_key]  = f_idx
                     st.session_state[slider_key] = float(x_vals[idx])
                     st.session_state[play_key]   = False
+            
+            # ---- -0.2 sec ----
+            with row2[1]:
+                if st.button("◀ 0.2s", key=prefix + "step_-0_2s"):
+                    # 今の時間を基準
+                    if slider_key in st.session_state:
+                        t_now = float(st.session_state[slider_key])
+                    else:
+                        idx = st.session_state.get(marker_key, 0)
+                        idx = max(0, min(idx, len(x_vals) - 1))
+                        t_now = float(x_vals[idx])
+                    t_new = max(t_min, min(t_max, t_now - 0.2))
 
-            # ===================== 2段目 =====================
+                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
+                    idx = max(0, min(idx, len(x_vals) - 1))
 
-            # ---- +1 frame ----
-            with row2[0]:
-                if st.button("1f ▶", key=prefix + "step_+1f"):
+                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
+                    f_idx = max(0, min(f_idx, len(video_times) - 1))
+
+                    st.session_state[marker_key] = idx
+                    st.session_state[frame_key]  = f_idx
+                    st.session_state[slider_key] = float(x_vals[idx])
+                    st.session_state[play_key]   = False
+            
+            # ---- -1 frame ----
+            with row2[2]:
+                if st.button("◀ 1f", key=prefix + "step_-1f"):
                     v_idx = st.session_state.get(frame_key)
                     if v_idx is None:
+                        # まだ video_frame_idx がないときは、今の marker から決める
                         idx = st.session_state.get(marker_key, 0)
                         idx = max(0, min(idx, len(x_vals) - 1))
                         t_now = float(x_vals[idx])
                         v_idx = int(np.argmin(np.abs(video_times_np - t_now)))
-                    v_idx = min(len(video_times) - 1, v_idx + 1)
+                    v_idx = max(0, v_idx - 1)
 
                     t = float(video_times[v_idx])
                     idx = int(np.argmin(np.abs(x_vals_np - t)))
@@ -568,50 +627,6 @@ with tab_graph:
 
                     st.session_state[frame_key]  = v_idx
                     st.session_state[marker_key] = idx
-                    st.session_state[slider_key] = float(x_vals[idx])
-                    st.session_state[play_key]   = False
-
-            # ---- +0.1 sec ----
-            with row2[1]:
-                if st.button("0.1s ▶", key=prefix + "step_+0_1s"):
-                    if slider_key in st.session_state:
-                        t_now = float(st.session_state[slider_key])
-                    else:
-                        idx = st.session_state.get(marker_key, 0)
-                        idx = max(0, min(idx, len(x_vals) - 1))
-                        t_now = float(x_vals[idx])
-                    t_new = max(t_min, min(t_max, t_now + 0.1))
-
-                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
-                    idx = max(0, min(idx, len(x_vals) - 1))
-
-                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
-                    f_idx = max(0, min(f_idx, len(video_times) - 1))
-
-                    st.session_state[marker_key] = idx
-                    st.session_state[frame_key]  = f_idx
-                    st.session_state[slider_key] = float(x_vals[idx])
-                    st.session_state[play_key]   = False
-
-            # ---- +1 sec ----
-            with row2[2]:
-                if st.button("1s ▶", key=prefix + "step_+1s"):
-                    if slider_key in st.session_state:
-                        t_now = float(st.session_state[slider_key])
-                    else:
-                        idx = st.session_state.get(marker_key, 0)
-                        idx = max(0, min(idx, len(x_vals) - 1))
-                        t_now = float(x_vals[idx])
-                    t_new = max(t_min, min(t_max, t_now + 1.0))
-
-                    idx = int(np.argmin(np.abs(x_vals_np - t_new)))
-                    idx = max(0, min(idx, len(x_vals) - 1))
-
-                    f_idx = int(np.argmin(np.abs(video_times_np - t_new)))
-                    f_idx = max(0, min(f_idx, len(video_times) - 1))
-
-                    st.session_state[marker_key] = idx
-                    st.session_state[frame_key]  = f_idx
                     st.session_state[slider_key] = float(x_vals[idx])
                     st.session_state[play_key]   = False
 
@@ -664,6 +679,51 @@ with tab_graph:
                         st.session_state[prefix + "video_frame_idx"] = v_idx
                         st.session_state[prefix + "timeline_time"] = t
                         st.session_state[prefix + "is_playing"] = False
+            
+            # 区間再生ボタン（開始〜終了をループ）
+            if st.button("▶ 区間再生 / ⏸ 停止", key=prefix + "segment_play"):
+                play_key    = prefix + "is_playing"
+                segment_key = prefix + "segment_loop"
+
+                # すでに再生中なら「停止」として動く（上の ▶ と同じトグル挙動）
+                if st.session_state.get(play_key, False):
+                    st.session_state[play_key]    = False
+                    st.session_state[segment_key] = False
+                else:
+                    # ここから「区間ループ再生」を開始
+                    start_i = st.session_state.get(prefix + "start_idx")
+                    end_i   = st.session_state.get(prefix + "end_idx")
+
+                    if start_i is not None and end_i is not None:
+                        # start/end の順が逆でもOKにする
+                        s_idx, e_idx = sorted([int(start_i), int(end_i)])
+                        s_idx = max(0, min(s_idx, len(x_vals) - 1))
+                        e_idx = max(0, min(e_idx, len(x_vals) - 1))
+
+                        start_t = float(x_vals[s_idx])
+
+                        # 開始時間に一番近い動画フレームを求める
+                        video_times_np = np.array(video_times)
+                        v_start = int(np.argmin(np.abs(video_times_np - start_t)))
+                        v_start = max(0, min(v_start, len(video_times) - 1))
+
+                        # 再生開始位置を start に揃える
+                        st.session_state[prefix + "marker_idx"]      = s_idx
+                        st.session_state[prefix + "timeline_time"]   = start_t
+                        st.session_state[prefix + "video_frame_idx"] = v_start
+
+                        # 区間ループフラグ ON ＋ 再生開始
+                        st.session_state[segment_key] = True
+                        st.session_state[play_key]    = True
+                        st.rerun()
+            
+            
+                        
+            # --- レポートタブへ移動ボタン ---
+            st.markdown("---")
+            if st.button("📝 レポートタブへ移動", key=prefix + "goto_report_tab"):
+                st.session_state["go_report_tab"] = True
+                st.rerun() 
 
 
     # -------------------------------------------------
@@ -910,11 +970,15 @@ with tab_graph:
     play_key        = prefix + "is_playing"
     marker_key      = prefix + "marker_idx"
     video_frame_key = prefix + "video_frame_idx"
+    segment_key     = prefix + "segment_loop"   # ★ 追加
 
     video_times_np = np.array(video_times)
     x_vals_np      = np.array(x_vals)
 
     if st.session_state.get(play_key, False):
+        # ★ 区間ループモードかどうか
+        segment_loop = st.session_state.get(segment_key, False)
+
         # --- 動画フレーム index を決定 ---
         v_idx = st.session_state.get(video_frame_key, None)
 
@@ -929,8 +993,32 @@ with tab_graph:
             # 通常は 1 フレーム進めるだけ
             v_idx += 1
 
-        # 終端チェック
-        if v_idx >= len(video_times_np):
+        # ★ 区間ループが有効なら、開始〜終了の範囲内でループさせる
+        if segment_loop:
+            start_i = st.session_state.get(prefix + "start_idx")
+            end_i   = st.session_state.get(prefix + "end_idx")
+
+            if start_i is not None and end_i is not None:
+                s_idx, e_idx = sorted([int(start_i), int(end_i)])
+                s_idx = max(0, min(s_idx, len(x_vals) - 1))
+                e_idx = max(0, min(e_idx, len(x_vals) - 1))
+
+                start_t = float(x_vals[s_idx])
+                end_t   = float(x_vals[e_idx])
+
+                # 配列範囲内にクランプ
+                v_idx = max(0, min(v_idx, len(video_times_np) - 1))
+                t_video_tmp = float(video_times_np[v_idx])
+
+                # 終了時刻を超えたら開始位置に戻す
+                if t_video_tmp > end_t:
+                    v_idx = int(np.argmin(np.abs(video_times_np - start_t)))
+            else:
+                # start/end 未設定なら通常再生にフォールバック
+                segment_loop = False
+
+        # ★ 通常再生（区間ループでない）なら、末尾で停止
+        if (not segment_loop) and (v_idx >= len(video_times_np)):
             v_idx = len(video_times_np) - 1
             st.session_state[play_key] = False  # 再生終了
 
@@ -947,7 +1035,7 @@ with tab_graph:
 
         # まだ再生中なら、fps に合わせて少し待ってから rerun
         if st.session_state.get(play_key, False):
-            time.sleep(1.0 / max(fps, 1.0))   # ここは「できるだけ」fpsに近づけるだけ
+            time.sleep(1.0 / max(fps, 1.0))
             st.rerun()
 
     else:
@@ -960,7 +1048,7 @@ with tab_graph:
 # -------------------------------------------------
 # タブ2: レポート
 # -------------------------------------------------
-with tab_report:
+elif tab == "📝 レポート":
     from report_core import (
         load_csv_from_path,
         build_report_html_from_df,

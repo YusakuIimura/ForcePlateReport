@@ -85,8 +85,8 @@ def build_streamlit_command(script_path: Path, port: int,
         "run",
         str(script_path),
         f"--server.port={port}",
-        f"--server.address={address}",
-        f"--server.headless={'true' if headless else 'false'}",
+        f"--server.address","0.0.0.0",
+        f"--server.headless","true",
     ]
     return cmd
 

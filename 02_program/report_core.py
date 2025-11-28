@@ -6,6 +6,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+import math, json
 
 # matplotlib (画像を書き出すのみ)
 import matplotlib
@@ -78,13 +79,148 @@ def load_csv_from_path(csv_path: Path) -> Tuple[pd.DataFrame, str, str, str, str
     return df, measured_at, date_str, time_str, duration_str
 
 # -------------------- 図の生成（最小） --------------------
+# -------------------- CoP軌跡（MPx/MPy）用ヘルパ --------------------
+
+def _scale_cop_coordinates(xs, ys, target_width: float):
+    """
+    MPx の幅が target_width[m] になるようにスケール。
+    plot_mpx_mpy.py の scale_coordinates 相当。
+    """
+    min_x = min(xs)
+    max_x = max(xs)
+    data_width = max_x - min_x
+    if math.isclose(data_width, 0.0):
+        raise ValueError("MPx values have zero width; cannot scale.")
+
+    scale = target_width / data_width
+    center = (max_x + min_x) / 2.0
+
+    scaled_x = [(x - center) * scale for x in xs]
+    scaled_y = [y * scale for y in ys]
+    return scaled_x, scaled_y, scale, center
+
+
+def _load_footprint_marks(path: Path | None):
+    """
+    footprint_marks.json を読み込み。
+    { "left": {"x":..,"y":..}, "right": {...} } を想定。
+    """
+    if path is None or not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "left" not in data or "right" not in data:
+        raise ValueError("JSON must contain 'left' and 'right' entries.")
+    return data
+
+
+def _compute_alignment(marks, width: float):
+    """
+    左右足マークから:
+      center … 左右の中点
+      axis_x … left→right の単位ベクトル
+      axis_y … その直交ベクトル
+      scale  … 画像座標 / 物理座標
+    を計算（plot_mpx_mpy の compute_alignment 相当）。
+    """
+    left = {k: float(v) for k, v in marks["left"].items()}
+    right = {k: float(v) for k, v in marks["right"].items()}
+
+    left_vec = np.array([left["x"], left["y"]], dtype=float)
+    right_vec = np.array([right["x"], right["y"]], dtype=float)
+    center = (left_vec + right_vec) / 2.0
+    axis_x = right_vec - left_vec
+    dist = np.linalg.norm(axis_x)
+    if dist == 0:
+        raise ValueError("Footprint marks must have distinct left/right points.")
+    axis_x /= dist
+    axis_y = np.array([-axis_x[1], axis_x[0]])  # 垂直
+
+    scale = dist / width
+    return center, axis_x, axis_y, scale
+
+
+def _cop_to_image_coords(xs, ys, center, axis_x, axis_y, scale: float):
+    """
+    物理座標 (x,y) → footprint画像上のピクセル座標へ変換。
+    """
+    px = []
+    py = []
+    for x, y in zip(xs, ys):
+        vec = center + axis_x * (x * scale) - axis_y * (y * scale)
+        px.append(float(vec[0]))
+        py.append(float(vec[1]))
+    return px, py
+
+
+def _plot_cop(
+    xs,
+    ys,
+    width: float,
+    out_path: Path,
+    footprint: Path | None = None,
+    footprint_marks: Path | None = None,
+) -> None:
+    """
+    CoP軌跡を footprint の上に「上書き」して PNG 保存。
+    plot_mpx_mpy.py の plot() 相当。
+    """
+    fig, ax = plt.subplots(figsize=(16, 4.0), dpi=150)
+
+    # デフォルトの左右位置（footprint_marks がない場合用）
+    cross_points = ([-width / 2, width / 2], [0.0, 0.0])
+    xs_plot, ys_plot = xs, ys
+    use_pixel_coords = False
+
+    if footprint is not None and footprint.exists():
+        img = plt.imread(footprint.as_posix())
+        if footprint_marks is not None and footprint_marks.exists():
+            marks = _load_footprint_marks(footprint_marks)
+            center, axis_x, axis_y, scale = _compute_alignment(marks, width)
+            xs_plot, ys_plot = _cop_to_image_coords(xs, ys, center, axis_x, axis_y, scale)
+            cross_points = (
+                [float(marks["left"]["x"]), float(marks["right"]["x"])],
+                [float(marks["left"]["y"]), float(marks["right"]["y"])],
+            )
+            ax.imshow(img, origin="upper")
+            h, w = img.shape[0], img.shape[1]
+            ax.set_xlim(0, w)
+            ax.set_ylim(h, 0)
+            use_pixel_coords = True
+        else:
+            # マークがない場合は物理座標にそのまま貼る
+            extent = (-width / 2, width / 2, -width / 4, width / 4)
+            ax.imshow(img, extent=extent, aspect="auto")
+
+    ax.plot(xs_plot, ys_plot, color="#1f77b4", linewidth=1.0, alpha=0.9)
+
+    # 参考用の十字（左右足の位置）
+    ax.scatter(
+        cross_points[0],
+        cross_points[1],
+        marker="+",
+        s=120,
+        color="#0d3b66",
+        linewidths=1.5,
+    )
+
+    if not use_pixel_coords:
+        pad = width * 0.1
+        ax.set_xlim(-width / 2 - pad, width / 2 + pad)
+        ax.set_ylim(min(ys_plot) - pad, max(ys_plot) + pad)
+        ax.set_aspect("equal", adjustable="box")
+
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(out_path.as_posix())
+    plt.close(fig)
+
 
 def generate_plots(df: pd.DataFrame, out_dir: Path) -> dict:
     """
     Time/LFz/RFz/MTz があれば簡易プロットをPNG出力し、data URIを返す。
     どれか欠けていたら該当プロットはスキップ。
     """
-    out = {"fz_uri": "", "tz_uri": ""}
+    out = {"fz_uri": "", "tz_uri": "", "cop_uri": ""}
 
     if "Time" not in df.columns:
         log("CSVにTime列がありません（グラフ生成スキップ）。")
@@ -132,11 +268,48 @@ def generate_plots(df: pd.DataFrame, out_dir: Path) -> dict:
     else:
         log("CSVにMTz列がありません（Tzグラフはスキップ）。")
 
+    # --- CoP軌跡（MPx/MPy） ---
+    try:
+        xs_raw = pd.to_numeric(df["MPx"], errors="coerce").dropna().tolist()
+        ys_raw = pd.to_numeric(df["MPy"], errors="coerce").dropna().tolist()
+        if xs_raw and ys_raw:
+            # 物理幅 [m]（とりあえず 0.3m。必要ならメタ情報から動的に取ってOK）
+            width = 0.3
+
+            xs_scaled, ys_scaled, scale, center = _scale_cop_coordinates(
+                xs_raw, ys_raw, width
+            )
+
+            base_dir = _base_dir()
+            footprint = base_dir / "footprint.png"
+            footprint_marks = base_dir / "footprint_marks.json"
+
+            cop_png = out_dir / "plot_cop.png"
+            _plot_cop(
+                xs_scaled,
+                ys_scaled,
+                width,
+                cop_png,
+                footprint if footprint.exists() else None,
+                footprint_marks if footprint_marks.exists() else None,
+            )
+            out["cop_uri"] = _to_data_uri(cop_png)
+            log("CoP軌跡グラフを保存しました。")
+        else:
+            log("MPx/MPy の有効データがありません（CoP軌跡はスキップ）。")
+    except Exception as e:
+        log(f"CoP軌跡の描画に失敗: {e!s}")
+
     return out
+
 
 # -------------------- レポートHTML生成 --------------------
 
-def build_report_html_from_df(df: pd.DataFrame, meta: dict, start_img_uri: str | None = None) -> str:
+def build_report_html_from_df(
+    df: pd.DataFrame,
+    meta: dict,
+    start_img_uri: str | None = None,
+) -> str:
     """
     単一の meta 辞書でテンプレへ渡す簡素版。
     - プロット生成（Fz/Tz）
@@ -207,6 +380,7 @@ def build_report_html_from_df(df: pd.DataFrame, meta: dict, start_img_uri: str |
         },
         "fz_uri": plots.get("fz_uri", ""),
         "tz_uri": plots.get("tz_uri", ""),
+        "cop_uri": plots.get("cop_uri", ""),
         "cog_metrics": metrics_fmt,
         "radar": radar,
         "grf": {

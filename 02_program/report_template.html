@@ -166,7 +166,7 @@
           <div class="basic-grid">
             <!-- 左：従来の情報表 -->
             <div class="kv">
-              <div>選手名</div><div>{{ user_name or meta.user_name or meta.athlete_name or '—' }}</div>
+              <div>ユーザー名</div><div>{{ user_name or meta.user_name or meta.athlete_name or '—' }}</div>
               <div>身長</div><div>{{ meta.height_cm or '—' }} cm</div>
               <div>体重</div><div>{{ meta.weight_kg or '—' }} kg</div>
               <div>足の大きさ</div><div>{{ meta.foot_size_cm or '—' }} cm</div>
@@ -190,7 +190,11 @@
       <div class="card">
         <h3>CoP軌跡</h3>
         <div class="card-body">
-          <div class="placeholder ph-img">（写真/CoPダミー）</div>
+          {% if cop_uri %}
+            <img class="resp" src="{{ cop_uri }}" alt="CoP軌跡">
+          {% else %}
+            <div class="placeholder ph-img">（写真/CoPダミー）</div>
+          {% endif %}
         </div>
       </div>
 

@@ -1,11 +1,23 @@
 {
   "launcher": {
-    "server_address": "0.0.0.0",
+    "server_address": "127.0.0.1",
     "headless": false,
     "apps": [
-      { "name": "landing", "script": "Landing.py",    "port": 8501 },
-      { "name": "home",    "script": "Home.py",       "port": 8502 },
-      { "name": "player",  "script": "PlayerView.py", "port": 8503 }
+      {
+        "name": "landing",
+        "script": "Landing.py",
+        "port": 8501
+      },
+      {
+        "name": "home",
+        "script": "Home.py",
+        "port": 8502
+      },
+      {
+        "name": "player",
+        "script": "PlayerView.py",
+        "port": 8503
+      }
     ]
   },
   "data": {
@@ -15,7 +27,7 @@
     "y_axes": {
       "default": {
         "y1": "LFx",
-        "y2": "LFz"
+        "y2": "LFy"
       }
     }
   }
