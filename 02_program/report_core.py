@@ -12,6 +12,12 @@ import math, json
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import platform
+if platform.system() == "Linux":
+    # EC2 / Amazon Linux 用（さっき入れた Noto フォント）
+    matplotlib.rcParams["font.family"] = "Noto Sans CJK JP"
+    matplotlib.rcParams["axes.unicode_minus"] = False
+
 
 # 外部ユーティリティ（既存の分析・テンプレ描画は活かす）
 from render_template import render_html
